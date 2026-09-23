@@ -10,7 +10,7 @@
  *     "apiKey": "sk_...",
  *     "projectId": "<mongodb-objectid>",
  *     "apiUrl": "https://api.mudbase.dev",
- *     "gatewayUrl": "wss://sandbox-gateway.mudbase.dev"
+ *     "gatewayUrl": "wss://ws.sandbox.mudbase.dev"
  *   }
  */
 
@@ -21,7 +21,7 @@ import { join } from "path"
 const CONFIG_PATH = join(homedir(), ".cells", "config.json")
 
 const DEFAULT_API_URL = "https://api.mudbase.dev"
-const DEFAULT_GATEWAY_URL = "wss://sandbox-gateway.mudbase.dev"
+const DEFAULT_GATEWAY_URL = "wss://ws.sandbox.mudbase.dev"
 
 let _cached = null
 
