@@ -96,11 +96,14 @@ export function registerExec(program) {
       }
 
       // Stream SSE output from the gateway.
-      // Each SSE event is "data: <json>\n\n".
-      // Frame types from the agent:
-      //   { type: "stdout", data: "<text>" }
-      //   { type: "stderr", data: "<text>" }
-      //   { type: "exit", code: <number> }
+      //
+      // The agent's exec handler (port 8766) uses named SSE events:
+      //   event: stdout\ndata: {"data":"<base64>"}\n\n
+      //   event: exit\ndata: {"code":N,"error":"..."}\n\n
+      //
+      // Note: the agent buffers stdout/stderr until the command exits and then
+      // sends one stdout event followed by an exit event. It does not stream
+      // individual lines mid-execution.
       let exitCode = 0
 
       const reader = res.body.getReader()
@@ -114,27 +117,39 @@ export function registerExec(program) {
 
           buffer += decoder.decode(value, { stream: true })
 
-          // Process complete SSE lines.
-          const lines = buffer.split("\n")
-          buffer = lines.pop() // keep incomplete last line
+          // Process SSE events. Events are separated by blank lines (\n\n).
+          // Each event may have "event: <type>" and "data: <json>" lines.
+          const parts = buffer.split("\n\n")
+          // Keep the last (possibly incomplete) part in the buffer.
+          buffer = parts.pop() || ""
 
-          for (const line of lines) {
-            if (!line.startsWith("data: ")) continue
-            const raw = line.slice(6).trim()
-            if (!raw) continue
+          for (const eventBlock of parts) {
+            const lines = eventBlock.split("\n")
+            let eventType = ""
+            let dataLine = ""
+
+            for (const line of lines) {
+              if (line.startsWith("event: ")) {
+                eventType = line.slice(7).trim()
+              } else if (line.startsWith("data: ")) {
+                dataLine = line.slice(6).trim()
+              }
+            }
+
+            if (!dataLine) continue
 
             let frame
             try {
-              frame = JSON.parse(raw)
+              frame = JSON.parse(dataLine)
             } catch {
               continue
             }
 
-            if (frame.type === "stdout" && frame.data) {
-              process.stdout.write(frame.data)
-            } else if (frame.type === "stderr" && frame.data) {
-              process.stderr.write(frame.data)
-            } else if (frame.type === "exit") {
+            if (eventType === "stdout" && frame.data) {
+              // Agent sends base64-encoded combined stdout+stderr.
+              const decoded = Buffer.from(frame.data, "base64")
+              process.stdout.write(decoded)
+            } else if (eventType === "exit") {
               exitCode = typeof frame.code === "number" ? frame.code : 0
             }
           }
