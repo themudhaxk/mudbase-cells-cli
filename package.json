@@ -1,0 +1,33 @@
+{
+  "name": "mudbase-cells-cli",
+  "version": "0.1.0",
+  "description": "CLI for Mudbase Cells - cloud sandbox environments",
+  "type": "module",
+  "bin": {
+    "cells": "./src/index.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "lint": "node --check src/index.js src/config.js src/client.js src/commands/create.js src/commands/exec.js src/commands/console.js src/commands/list.js"
+  },
+  "dependencies": {
+    "commander": "^12.1.0",
+    "ws": "^8.18.0"
+  },
+  "files": [
+    "src/"
+  ],
+  "keywords": [
+    "mudbase",
+    "cells",
+    "sandbox",
+    "cli"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/themudhaxk/mudbase-cells-cli.git"
+  }
+}
