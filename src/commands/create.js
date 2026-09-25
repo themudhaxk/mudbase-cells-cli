@@ -5,7 +5,7 @@
  * downstream commands (exec, console) can use them.
  *
  * Usage:
- *   cells create --project <projectId> [--language python] [--version 3.12] [--timeout 300]
+ *   cells create --project <projectId> [--language python] [--runtime-version 3.12] [--timeout 300]
  *   cells create --project <projectId> --json
  */
 
@@ -18,7 +18,7 @@ export function registerCreate(program) {
     .description("Create a new sandbox session")
     .option("-p, --project <id>", "Project ID (overrides config / CELLS_PROJECT_ID)")
     .option("-l, --language <lang>", "Runtime language: python or node", "python")
-    .option("--version <ver>", "Language version, e.g. 3.12 or 22", "3.12")
+    .option("--runtime-version <ver>", "Language version, e.g. 3.12 or 22", "3.12")
     .option("-t, --timeout <seconds>", "Hard timeout in seconds", "300")
     .option("--json", "Output raw JSON response")
     .action(async (opts) => {
@@ -34,7 +34,7 @@ export function registerCreate(program) {
       try {
         const result = await createSession(projectId, {
           language: opts.language,
-          languageVersion: opts.version,
+          languageVersion: opts.runtimeVersion,
           timeoutSeconds,
         })
 
