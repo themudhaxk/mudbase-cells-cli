@@ -58,6 +58,7 @@ export function registerConsole(program) {
       let exitCode = 0
 
       ws.on("error", (err) => {
+        cleanupTerminal()
         console.error(`\nWebSocket error: ${err.message}`)
         process.exit(1)
       })
@@ -143,7 +144,7 @@ export function registerConsole(program) {
           ws.send(JSON.stringify({ type: "stdin", data: Buffer.from([0x03]).toString("base64") }))
         } else {
           // Second Ctrl+C: hard exit.
-          if (process.stdin.isTTY) process.stdin.setRawMode(false)
+          cleanupTerminal()
           if (opts.close && ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({ type: "close" }))
           }
@@ -152,6 +153,13 @@ export function registerConsole(program) {
         }
       })
     })
+}
+
+function cleanupTerminal() {
+  if (process.stdin.isTTY) {
+    try { process.stdin.setRawMode(false) } catch (_) {}
+  }
+  process.stdin.pause()
 }
 
 function sendResize(ws, cols, rows) {
