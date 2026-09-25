@@ -81,11 +81,11 @@ All configuration options:
 
 ```sh
 cells create --project <projectId>
-cells create --project <projectId> --language node --version 22
+cells create --project <projectId> --language node --runtime-version 22
 cells create --project <projectId> --timeout 600
 ```
 
-Options: `--language` (python or node, default: python), `--version` (e.g. 3.12 or 22), `--timeout` (seconds, default 300), `--json`.
+Options: `--language` (python or node, default: python), `--runtime-version` (e.g. 3.12 or 22), `--timeout` (seconds, default 300), `--json`.
 
 ### List sessions
 
