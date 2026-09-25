@@ -21,6 +21,7 @@ import { registerCreate } from "./commands/create.js"
 import { registerList } from "./commands/list.js"
 import { registerExec } from "./commands/exec.js"
 import { registerConsole } from "./commands/console.js"
+import { registerSnapshot } from "./commands/snapshot.js"
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const pkg = JSON.parse(readFileSync(join(__dirname, "../package.json"), "utf8"))
@@ -36,6 +37,7 @@ registerCreate(program)
 registerList(program)
 registerExec(program)
 registerConsole(program)
+registerSnapshot(program)
 
 program.parseAsync(process.argv).catch((err) => {
   console.error(`Error: ${err.message}`)

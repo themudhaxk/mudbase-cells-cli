@@ -10,7 +10,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "lint": "node --check src/index.js src/config.js src/client.js src/commands/create.js src/commands/exec.js src/commands/console.js src/commands/list.js"
+    "lint": "node --check src/index.js src/config.js src/client.js src/commands/create.js src/commands/exec.js src/commands/console.js src/commands/list.js src/commands/snapshot.js"
   },
   "dependencies": {
     "commander": "^12.1.0",

@@ -122,3 +122,52 @@ export async function getConnectToken(projectId, sessionId) {
 export async function closeSession(projectId, sessionId) {
   return apiRequest("DELETE", `/api/sandboxes/projects/${projectId}/sessions/${sessionId}`)
 }
+
+/**
+ * Create a snapshot (checkpoint) of a running session's filesystem state.
+ *
+ * @param {string} projectId
+ * @param {string} sessionId
+ * @param {object} [opts]
+ * @param {string} [opts.label] - Human-readable label for the snapshot
+ * @returns {Promise<{snapshotId, label, createdAt, sizeBytes?}>}
+ */
+export async function createSnapshot(projectId, sessionId, opts = {}) {
+  const body = {}
+  if (opts.label) body.label = opts.label
+  return apiRequest(
+    "POST",
+    `/api/sandboxes/projects/${projectId}/sessions/${sessionId}/snapshot`,
+    body,
+  )
+}
+
+/**
+ * List snapshots for a session.
+ *
+ * @param {string} projectId
+ * @param {string} sessionId
+ * @returns {Promise<{snapshots: Array<{_id, label, createdAt, sizeBytes?}>}>}
+ */
+export async function listSnapshots(projectId, sessionId) {
+  return apiRequest(
+    "GET",
+    `/api/sandboxes/projects/${projectId}/sessions/${sessionId}/snapshots`,
+  )
+}
+
+/**
+ * Restore a session from a previously saved snapshot.
+ *
+ * @param {string} projectId
+ * @param {string} sessionId
+ * @param {string} snapshotId
+ * @returns {Promise<object>} Restored session info
+ */
+export async function restoreSnapshot(projectId, sessionId, snapshotId) {
+  return apiRequest(
+    "POST",
+    `/api/sandboxes/projects/${projectId}/sessions/${sessionId}/restore`,
+    { snapshotId },
+  )
+}

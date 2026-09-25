@@ -5,36 +5,29 @@
  *
  * The command runs as a subprocess (not via the PTY/REPL), so arbitrary
  * shell commands work regardless of the session's runtime language.
- * Output is streamed via SSE from the gateway's exec proxy.
+ * Output is streamed via SSE from the API's exec endpoint.
  *
  * Usage:
  *   cells exec <sessionId> --project <projectId> -- python -c "print('hello')"
  *   cells exec <sessionId> --project <projectId> -- bash -c "ls /workspace"
- *   cells exec <sessionId> --project <projectId> --token <jwt> -- <cmd>
  *   cells exec <sessionId> --project <projectId> --timeout 10000 -- <cmd>
  */
 
 import { requireApiKey, requireProjectId, getConfig } from "../config.js"
-import { getConnectToken } from "../client.js"
 
 export function registerExec(program) {
   program
     .command("exec <sessionId>")
     .description("Execute a command inside a running session")
     .option("-p, --project <id>", "Project ID (overrides config / CELLS_PROJECT_ID)")
-    .option("--token <jwt>", "Gateway JWT (skips connect-token API call if provided)")
     .option("--timeout <ms>", "Command timeout in milliseconds (default: 30000)", "30000")
     .option("--workdir <path>", "Working directory inside the cell", "/workspace")
     .allowUnknownOption()
-    .action(async (sessionId, opts, cmd) => {
-      requireApiKey()
+    .action(async (sessionId, opts) => {
+      const apiKey = requireApiKey()
       const projectId = requireProjectId(opts.project)
 
       // Everything after -- is the command to run.
-      const args = cmd.args.slice(cmd.args.indexOf(sessionId) + 1)
-      // Remove flags that belong to this command, not the target command.
-      // commander puts parsed opts aside; the raw -- args are in cmd.args after the double-dash.
-      // A simpler approach: take process.argv after the first -- separator.
       const dashDash = process.argv.indexOf("--")
       if (dashDash === -1 || dashDash >= process.argv.length - 1) {
         console.error("Usage: cells exec <sessionId> [opts] -- <command> [args...]")
@@ -47,27 +40,9 @@ export function registerExec(program) {
       }
 
       const timeoutMs = parseInt(opts.timeout, 10)
+      const { apiUrl } = getConfig()
 
-      // Get a fresh gateway token for this session.
-      let token = opts.token
-      let gatewayBase
-      try {
-        if (!token) {
-          const tokenResult = await getConnectToken(projectId, sessionId)
-          token = tokenResult.token
-          // The wsUrl is wss://..., we need https:// for the exec HTTP endpoint.
-          const wsUrl = tokenResult.wsUrl
-          gatewayBase = wsUrl.replace(/^wss?:\/\//, "https://").replace(/\/sessions\/.*$/, "")
-        } else {
-          const cfg = getConfig()
-          gatewayBase = cfg.gatewayUrl.replace(/^wss?:\/\//, "https://")
-        }
-      } catch (err) {
-        console.error(`Error getting connect token: ${err.message}`)
-        process.exit(1)
-      }
-
-      const execUrl = `${gatewayBase}/sessions/${sessionId}/exec`
+      const execUrl = `${apiUrl}/api/sandboxes/projects/${projectId}/sessions/${sessionId}/exec`
 
       let res
       try {
@@ -75,7 +50,7 @@ export function registerExec(program) {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            "Authorization": `Bearer ${token}`,
+            "X-API-Key": apiKey,
           },
           body: JSON.stringify({
             cmd: execCmd,
@@ -84,20 +59,20 @@ export function registerExec(program) {
           }),
         })
       } catch (err) {
-        console.error(`Error: network failure reaching gateway: ${err.message}`)
+        console.error(`Error: network failure reaching API: ${err.message}`)
         process.exit(1)
       }
 
       if (!res.ok) {
         let errText
         try { errText = await res.text() } catch { errText = String(res.status) }
-        console.error(`Error: gateway returned ${res.status}: ${errText}`)
+        console.error(`Error: API returned ${res.status}: ${errText}`)
         process.exit(1)
       }
 
-      // Stream SSE output from the gateway.
+      // Stream SSE output from the API.
       //
-      // The agent's exec handler (port 8766) uses named SSE events:
+      // The API proxies the gateway's SSE format:
       //   event: stdout\ndata: {"data":"<base64>"}\n\n
       //   event: exit\ndata: {"code":N,"error":"..."}\n\n
       //
