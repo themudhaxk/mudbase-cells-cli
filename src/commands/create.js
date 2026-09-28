@@ -17,7 +17,7 @@ export function registerCreate(program) {
     .command("create")
     .description("Create a new sandbox session")
     .option("-p, --project <id>", "Project ID (overrides config / CELLS_PROJECT_ID)")
-    .option("-l, --language <lang>", "Runtime language: python or node", "python")
+    .option("-l, --language <lang>", "Runtime language: python, node, go, rust, php, java, ruby, or csharp", "python")
     .option("--runtime-version <ver>", "Language version, e.g. 3.12 or 22", "3.12")
     .option("-t, --timeout <seconds>", "Hard timeout in seconds", "300")
     .option("--json", "Output raw JSON response")
