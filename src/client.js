@@ -63,8 +63,8 @@ export async function apiRequest(method, path, body, apiKey) {
  *
  * @param {string} projectId
  * @param {object} opts
- * @param {string} [opts.language] - 'python' or 'node' (default: 'python')
- * @param {string} [opts.languageVersion] - e.g. '3.12' or '22' (default: '3.12')
+ * @param {string} [opts.language] - 'python', 'node', 'go', 'rust', 'php', 'java', 'ruby', or 'csharp' (default: 'python')
+ * @param {string} [opts.languageVersion] - e.g. '3.12', '22', '1.23', '1.82', '8.3', '21', '3.3', or '8.0' (default: '3.12')
  * @param {number} [opts.timeoutSeconds] - session hard timeout (default: 300)
  * @returns {Promise<{sessionId, wsUrl, token, expiresAt, language, languageVersion, timeoutAt}>}
  */
