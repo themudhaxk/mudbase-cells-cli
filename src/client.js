@@ -216,3 +216,168 @@ export async function getRestoreJob(projectId, sessionId, restoreId) {
     `/api/sandboxes/projects/${projectId}/sessions/${sessionId}/restores/${restoreId}`,
   )
 }
+
+// ---------------------------------------------------------------------------
+// File operations
+// ---------------------------------------------------------------------------
+
+/**
+ * Write one or more files into a running session's filesystem.
+ *
+ * Binary content must be base64-encoded and the file entry must include
+ * { encoding: "base64" }. Text files may omit encoding (defaults to "text").
+ *
+ * The server returns HTTP 207 when some files succeeded and others failed.
+ * The caller should inspect result.results[] for per-file success/failure.
+ * This function treats a 207 as a successful HTTP response and returns the
+ * body so the caller can inspect per-file outcomes.
+ *
+ * @param {string} projectId
+ * @param {string} sessionId
+ * @param {Array<{path: string, content: string, encoding?: "text"|"base64"}>} files
+ * @returns {Promise<{success: boolean, results: Array<{path, success, error?}>}>}
+ */
+export async function writeFiles(projectId, sessionId, files) {
+  const config = getConfig()
+  const url = `${config.apiUrl}/api/sandboxes/projects/${projectId}/sessions/${sessionId}/files`
+
+  const headers = {
+    "Content-Type": "application/json",
+    "X-API-Key": config.apiKey,
+  }
+
+  let res
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ files }),
+    })
+  } catch (err) {
+    throw new Error(`Network error: ${err.message}`)
+  }
+
+  let data
+  try {
+    data = await res.json()
+  } catch {
+    data = {}
+  }
+
+  // 207 Multi-Status: some files may have failed. Return the body so callers
+  // can inspect individual results; treat it as a non-error response.
+  if (!res.ok && res.status !== 207) {
+    const msg = (typeof data === "object" && data?.error) ? data.error : `HTTP ${res.status}`
+    const err = new Error(msg)
+    err.status = res.status
+    err.body = data
+    throw err
+  }
+
+  return data
+}
+
+/**
+ * Read a single file from a running session's filesystem.
+ *
+ * @param {string} projectId
+ * @param {string} sessionId
+ * @param {string} remotePath - Path to read, relative to /workspace
+ * @returns {Promise<{success, path, content, encoding, sha256, size}>}
+ */
+export async function readFile(projectId, sessionId, remotePath) {
+  const encodedPath = encodeURIComponent(remotePath)
+  return apiRequest(
+    "GET",
+    `/api/sandboxes/projects/${projectId}/sessions/${sessionId}/files?path=${encodedPath}`,
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Service lifecycle
+// ---------------------------------------------------------------------------
+
+/**
+ * List services running inside a session.
+ *
+ * @param {string} projectId
+ * @param {string} sessionId
+ * @returns {Promise<{success, services: Array<{name, status, pid, port?}>}>}
+ */
+export async function listServices(projectId, sessionId) {
+  return apiRequest(
+    "GET",
+    `/api/sandboxes/projects/${projectId}/sessions/${sessionId}/services`,
+  )
+}
+
+/**
+ * Start a named service inside a session.
+ *
+ * @param {string} projectId
+ * @param {string} sessionId
+ * @param {object} opts
+ * @param {string} opts.name - Service name (alphanumeric/hyphen/underscore)
+ * @param {string[]} opts.cmd - Command to run, e.g. ["python", "app.py"]
+ * @param {string[]} [opts.args] - Additional args (can be folded into cmd)
+ * @param {string} [opts.cwd] - Working directory (default: /workspace)
+ * @param {number} [opts.port] - Port the service listens on
+ * @param {boolean} [opts.waitForPort] - Wait until the port is reachable (requires port)
+ * @param {number} [opts.timeoutMs] - Max wait time for port readiness in ms (default: 30000)
+ * @param {Record<string,string>} [opts.env] - Additional environment variables
+ * @returns {Promise<{success, name, status, pid?, port?, publicUrl?}>}
+ */
+export async function startService(projectId, sessionId, opts) {
+  const { name, cmd, args, cwd, port, waitForPort, timeoutMs, env } = opts
+  const body = { name, cmd }
+  if (args !== undefined) body.args = args
+  if (cwd !== undefined) body.cwd = cwd
+  if (port !== undefined) body.port = port
+  if (waitForPort !== undefined) body.waitForPort = waitForPort
+  if (timeoutMs !== undefined) body.timeoutMs = timeoutMs
+  if (env !== undefined) body.env = env
+  return apiRequest(
+    "POST",
+    `/api/sandboxes/projects/${projectId}/sessions/${sessionId}/services`,
+    body,
+  )
+}
+
+/**
+ * Stop a named service running inside a session. No-op if not running.
+ *
+ * @param {string} projectId
+ * @param {string} sessionId
+ * @param {string} name - Service name
+ * @returns {Promise<{success}>}
+ */
+export async function stopService(projectId, sessionId, name) {
+  return apiRequest(
+    "DELETE",
+    `/api/sandboxes/projects/${projectId}/sessions/${sessionId}/services/${encodeURIComponent(name)}`,
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Port exposure
+// ---------------------------------------------------------------------------
+
+/**
+ * Expose an internal port so the session is reachable from the internet.
+ *
+ * Returns a publicUrl in the form:
+ *   https://sb-{sessionId}-{port}.sandbox.mudbase.dev
+ *
+ * @param {string} projectId
+ * @param {string} sessionId
+ * @param {number} port - Internal port to expose (1-65535)
+ * @param {"public"|"token-gated"} [access] - Access control (default: "public")
+ * @returns {Promise<{success, port, publicUrl, portToken?}>}
+ */
+export async function exposePort(projectId, sessionId, port, access = "public") {
+  return apiRequest(
+    "POST",
+    `/api/sandboxes/projects/${projectId}/sessions/${sessionId}/expose`,
+    { port, access },
+  )
+}
