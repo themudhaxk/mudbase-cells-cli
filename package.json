@@ -3,6 +3,16 @@
   "version": "0.1.0",
   "description": "CLI for Mudbase Cells - cloud sandbox environments",
   "type": "module",
+  "author": "Mudbase Team",
+  "license": "MIT",
+  "homepage": "https://mudbase.dev",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/themudhaxk/mudbase-cells-cli.git"
+  },
+  "bugs": {
+    "url": "https://github.com/themudhaxk/mudbase-cells-cli/issues"
+  },
   "bin": {
     "cells": "./src/index.js"
   },
@@ -25,10 +35,5 @@
     "cells",
     "sandbox",
     "cli"
-  ],
-  "license": "MIT",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/themudhaxk/mudbase-cells-cli.git"
-  }
+  ]
 }
