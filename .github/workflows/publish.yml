@@ -1,0 +1,72 @@
+# Publish mudbase-cells-cli to npm via OIDC Trusted Publishing.
+#
+# Setup required on npmjs.com before the first run (one-time, operator action):
+#   Log in as themudhaxk -> Account settings -> Packages -> Add Package.
+#   Package name: mudbase-cells-cli
+#   Publisher type: GitHub Actions
+#   Organization or username: themudhaxk
+#   Repository: mudbase-cells-cli
+#   Workflow filename: publish.yml
+#   Environment name: (leave blank)
+#
+# No NPM_TOKEN or other secret is needed. The OIDC grant minted at run time
+# is sufficient for both the initial publish (claims the name) and all future
+# version publishes, as long as the Trusted Publisher entry above is registered.
+#
+# Triggers:
+#   workflow_dispatch: run manually from the Actions tab (useful for the first
+#     publish or a hotfix that does not map to a release tag).
+#   release: published: fires automatically when a GitHub Release is published
+#     against this repo. Tag the release with the version in package.json first.
+#
+# The job skips silently if the version in package.json is already on npm,
+# so re-running after a partial failure is safe.
+
+name: Publish
+
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Syntax check
+        run: npm run lint
+
+      - name: Check if version already published
+        id: version_check
+        run: |
+          VER=$(node -p "require('./package.json').version")
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+          if npm view "mudbase-cells-cli@${VER}" version 2>/dev/null | grep -qx "${VER}"; then
+            echo "already_published=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "already_published=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Skip if already published
+        if: steps.version_check.outputs.already_published == 'true'
+        run: echo "mudbase-cells-cli@${{ steps.version_check.outputs.version }} is already on npm, nothing to do."
+
+      - name: Publish to npm via Trusted Publishing
+        if: steps.version_check.outputs.already_published == 'false'
+        run: npm publish --provenance --access public
