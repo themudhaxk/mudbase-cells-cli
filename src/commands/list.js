@@ -38,18 +38,21 @@ export function registerList(program) {
         const pad = (s, n) => String(s).padEnd(n)
         console.log(
           pad("SESSION ID", 26) +
-          pad("LANGUAGE", 12) +
+          pad("LANGUAGE", 14) +
           pad("STATUS", 10) +
-          "STARTED"
+          pad("STARTED", 22) +
+          "EXPIRES"
         )
-        console.log("-".repeat(70))
+        console.log("-".repeat(96))
         for (const s of sessions) {
           const started = s.startedAt ? new Date(s.startedAt).toISOString() : "N/A"
+          const expires = s.timeoutAt ? new Date(s.timeoutAt).toISOString() : "N/A"
           console.log(
             pad(s._id, 26) +
-            pad(`${s.language} ${s.languageVersion}`, 12) +
+            pad(`${s.language} ${s.languageVersion}`, 14) +
             pad(s.status, 10) +
-            started
+            pad(started, 22) +
+            expires
           )
         }
       } catch (err) {

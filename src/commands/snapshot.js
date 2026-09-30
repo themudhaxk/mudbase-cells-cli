@@ -1,24 +1,28 @@
 /**
- * cells snapshot
+ * cells checkpoint
  *
  * Checkpoint and restore sandbox session filesystem state.
+ * Requires the session to have been created with a --cell-name (persistent volume).
  *
  * Subcommands:
- *   cells snapshot create <sessionId> [--project <id>] [--label <text>]
- *   cells snapshot list   <sessionId> [--project <id>]
- *   cells snapshot restore <sessionId> <snapshotId> [--project <id>]
- *
- * Note: the snapshot/restore API is under active development. These commands
- * wire against the documented expected endpoints and fail with a clear message
- * if the backend has not yet enabled the feature.
+ *   cells checkpoint create  <sessionId> [--project <id>] [--name <text>]
+ *   cells checkpoint list    <sessionId> [--project <id>]
+ *   cells checkpoint restore <sessionId> <checkpointId> [--project <id>]
+ *   cells checkpoint delete  <sessionId> <checkpointId> [--project <id>]
  */
 
 import { requireApiKey, requireProjectId } from "../config.js"
-import { createSnapshot, listSnapshots, restoreSnapshot } from "../client.js"
+import {
+  createCheckpoint,
+  listCheckpoints,
+  restoreFromCheckpoint,
+  deleteCheckpoint,
+  getRestoreJob,
+} from "../client.js"
 
 const NOT_AVAILABLE_MSG =
-  "Snapshot API is not yet available on this server. " +
-  "This feature is in progress and will be enabled in a future release."
+  "Checkpoint API is not yet available on this server. " +
+  "This feature requires a session created with a --cell-name option (persistent volume)."
 
 /**
  * Detect a "not implemented" or "not found" API error and print the
@@ -36,25 +40,58 @@ function handleNotAvailable(err) {
   return false
 }
 
-export function registerSnapshot(program) {
-  const snapshot = program
-    .command("snapshot")
-    .description("Checkpoint and restore sandbox session state")
+/**
+ * Poll a restore job until it reaches a terminal state (succeeded or failed).
+ * Prints progress dots to stderr and returns once done.
+ *
+ * @param {string} projectId
+ * @param {string} sessionId
+ * @param {string} restoreId
+ * @param {number} pollIntervalMs
+ * @returns {Promise<object>} Final job result object
+ */
+async function pollRestoreJob(projectId, sessionId, restoreId, pollIntervalMs = 2000) {
+  process.stderr.write("Waiting for restore")
+  const MAX_POLLS = 120 // 4 minutes max
+  for (let i = 0; i < MAX_POLLS; i++) {
+    await new Promise((resolve) => setTimeout(resolve, pollIntervalMs))
+    process.stderr.write(".")
+    let job
+    try {
+      job = await getRestoreJob(projectId, sessionId, restoreId)
+    } catch (err) {
+      process.stderr.write("\n")
+      throw err
+    }
+    const status = job.status
+    if (status === "succeeded" || status === "failed" || status === "cancelled") {
+      process.stderr.write("\n")
+      return job
+    }
+  }
+  process.stderr.write("\n")
+  throw new Error("Restore job timed out after polling. Check the API for job status: " + restoreId)
+}
 
-  // cells snapshot create <sessionId>
-  snapshot
+export function registerSnapshot(program) {
+  const checkpoint = program
+    .command("checkpoint")
+    .description("Checkpoint and restore sandbox session filesystem state (requires a named cell)")
+
+  // cells checkpoint create <sessionId>
+  checkpoint
     .command("create <sessionId>")
-    .description("Create a snapshot of a running session")
+    .description("Create a checkpoint of a running or suspended named-cell session")
     .option("-p, --project <id>", "Project ID (overrides config / CELLS_PROJECT_ID)")
-    .option("--label <text>", "Human-readable label for this snapshot")
+    .option("--name <text>", "Human-readable name for this checkpoint (max 200 chars)")
     .option("--json", "Output raw JSON response")
     .action(async (sessionId, opts) => {
       requireApiKey()
       const projectId = requireProjectId(opts.project)
 
       try {
-        const result = await createSnapshot(projectId, sessionId, {
-          label: opts.label,
+        const result = await createCheckpoint(projectId, sessionId, {
+          name: opts.name,
         })
 
         if (opts.json) {
@@ -62,13 +99,12 @@ export function registerSnapshot(program) {
           return
         }
 
-        console.log("Snapshot created")
-        console.log(`  ID:        ${result.snapshotId || result._id}`)
-        if (result.label) console.log(`  Label:     ${result.label}`)
-        console.log(`  Created:   ${result.createdAt}`)
-        if (result.sizeBytes != null) {
-          console.log(`  Size:      ${(result.sizeBytes / 1024 / 1024).toFixed(2)} MB`)
-        }
+        console.log("Checkpoint created")
+        console.log(`  Checkpoint ID: ${result.checkpointId}`)
+        if (result.snapshotId) console.log(`  Snapshot ID:   ${result.snapshotId}`)
+        if (result.name) console.log(`  Name:          ${result.name}`)
+        if (result.sizeGb != null) console.log(`  Size:          ${result.sizeGb} GB`)
+        console.log(`  Created:       ${result.createdAt}`)
       } catch (err) {
         if (handleNotAvailable(err)) process.exit(2)
         console.error(`Error: ${err.message}`)
@@ -76,10 +112,10 @@ export function registerSnapshot(program) {
       }
     })
 
-  // cells snapshot list <sessionId>
-  snapshot
+  // cells checkpoint list <sessionId>
+  checkpoint
     .command("list <sessionId>")
-    .description("List snapshots for a session")
+    .description("List checkpoints for a named-cell session, newest first")
     .option("-p, --project <id>", "Project ID (overrides config / CELLS_PROJECT_ID)")
     .option("--json", "Output raw JSON response")
     .action(async (sessionId, opts) => {
@@ -87,31 +123,33 @@ export function registerSnapshot(program) {
       const projectId = requireProjectId(opts.project)
 
       try {
-        const result = await listSnapshots(projectId, sessionId)
-        const snapshots = result.snapshots || []
+        const result = await listCheckpoints(projectId, sessionId)
+        const checkpoints = result.checkpoints || []
 
         if (opts.json) {
           console.log(JSON.stringify(result, null, 2))
           return
         }
 
-        if (snapshots.length === 0) {
-          console.log("No snapshots found.")
+        if (checkpoints.length === 0) {
+          console.log("No checkpoints found.")
           return
         }
 
         const pad = (s, n) => String(s).padEnd(n)
         console.log(
-          pad("SNAPSHOT ID", 26) +
-          pad("LABEL", 20) +
+          pad("CHECKPOINT ID", 28) +
+          pad("NAME", 24) +
+          pad("SIZE", 8) +
           "CREATED"
         )
-        console.log("-".repeat(70))
-        for (const s of snapshots) {
-          const id = s._id || s.snapshotId || ""
-          const label = s.label || ""
-          const created = s.createdAt ? new Date(s.createdAt).toISOString() : "N/A"
-          console.log(pad(id, 26) + pad(label, 20) + created)
+        console.log("-".repeat(80))
+        for (const c of checkpoints) {
+          const id = c.id || c.checkpointId || ""
+          const name = c.name || ""
+          const size = c.sizeGb != null ? `${c.sizeGb} GB` : "N/A"
+          const created = c.createdAt ? new Date(c.createdAt).toISOString() : "N/A"
+          console.log(pad(id, 28) + pad(name, 24) + pad(size, 8) + created)
         }
       } catch (err) {
         if (handleNotAvailable(err)) process.exit(2)
@@ -120,27 +158,72 @@ export function registerSnapshot(program) {
       }
     })
 
-  // cells snapshot restore <sessionId> <snapshotId>
-  snapshot
-    .command("restore <sessionId> <snapshotId>")
-    .description("Restore a session from a snapshot")
+  // cells checkpoint restore <sessionId> <checkpointId>
+  checkpoint
+    .command("restore <sessionId> <checkpointId>")
+    .description("Restore a session volume from a checkpoint (async; polls until complete)")
     .option("-p, --project <id>", "Project ID (overrides config / CELLS_PROJECT_ID)")
+    .option("--no-wait", "Start the restore job but do not wait for it to complete")
     .option("--json", "Output raw JSON response")
-    .action(async (sessionId, snapshotId, opts) => {
+    .action(async (sessionId, checkpointId, opts) => {
       requireApiKey()
       const projectId = requireProjectId(opts.project)
 
       try {
-        const result = await restoreSnapshot(projectId, sessionId, snapshotId)
+        const started = await restoreFromCheckpoint(projectId, sessionId, checkpointId)
+
+        if (opts.json && opts.noWait) {
+          console.log(JSON.stringify(started, null, 2))
+          return
+        }
+
+        if (opts.noWait) {
+          console.log(`Restore job started: ${started.restoreId}`)
+          console.log("Poll status with: cells checkpoint restore-status <sessionId> <restoreId>")
+          return
+        }
+
+        const job = await pollRestoreJob(projectId, sessionId, started.restoreId)
+
+        if (opts.json) {
+          console.log(JSON.stringify(job, null, 2))
+          return
+        }
+
+        if (job.status === "succeeded") {
+          console.log("Session restored from checkpoint successfully")
+          if (job.restoreId) console.log(`  Restore ID:    ${job.restoreId}`)
+          if (job.completedAt) console.log(`  Completed:     ${job.completedAt}`)
+        } else {
+          console.error(`Restore ${job.status}: ${job.error || "unknown error"}`)
+          process.exit(1)
+        }
+      } catch (err) {
+        if (handleNotAvailable(err)) process.exit(2)
+        console.error(`Error: ${err.message}`)
+        process.exit(1)
+      }
+    })
+
+  // cells checkpoint delete <sessionId> <checkpointId>
+  checkpoint
+    .command("delete <sessionId> <checkpointId>")
+    .description("Delete a checkpoint and its underlying volume snapshot")
+    .option("-p, --project <id>", "Project ID (overrides config / CELLS_PROJECT_ID)")
+    .option("--json", "Output raw JSON response")
+    .action(async (sessionId, checkpointId, opts) => {
+      requireApiKey()
+      const projectId = requireProjectId(opts.project)
+
+      try {
+        const result = await deleteCheckpoint(projectId, sessionId, checkpointId)
 
         if (opts.json) {
           console.log(JSON.stringify(result, null, 2))
           return
         }
 
-        console.log("Session restored from snapshot")
-        if (result.sessionId) console.log(`  Session ID: ${result.sessionId}`)
-        if (result.snapshotId) console.log(`  Snapshot:   ${result.snapshotId}`)
+        console.log(`Checkpoint deleted: ${result.checkpointId || checkpointId}`)
       } catch (err) {
         if (handleNotAvailable(err)) process.exit(2)
         console.error(`Error: ${err.message}`)
