@@ -72,13 +72,16 @@ export function registerExec(program) {
 
       // Stream SSE output from the API.
       //
-      // The API proxies the gateway's SSE format:
-      //   event: stdout\ndata: {"data":"<base64>"}\n\n
-      //   event: exit\ndata: {"code":N,"error":"..."}\n\n
+      // The exec endpoint returns a text/event-stream (SSE) response in the
+      // simple line-prefixed format used by the sandbox gateway:
       //
-      // Note: the agent buffers stdout/stderr until the command exits and then
-      // sends one stdout event followed by an exit event. It does not stream
-      // individual lines mid-execution.
+      //   data: stdout:<line text>\n\n
+      //   data: stderr:<line text>\n\n
+      //   data: exit:<code>\n\n
+      //   : keepalive\n\n   (emitted every 10 s to keep the Fly proxy alive)
+      //
+      // Each event boundary is a double newline. Keepalive comment lines start
+      // with ":" and are ignored.
       let exitCode = 0
 
       const reader = res.body.getReader()
@@ -92,40 +95,30 @@ export function registerExec(program) {
 
           buffer += decoder.decode(value, { stream: true })
 
-          // Process SSE events. Events are separated by blank lines (\n\n).
-          // Each event may have "event: <type>" and "data: <json>" lines.
+          // Split on SSE event boundaries (double newline).
           const parts = buffer.split("\n\n")
           // Keep the last (possibly incomplete) part in the buffer.
           buffer = parts.pop() || ""
 
           for (const eventBlock of parts) {
-            const lines = eventBlock.split("\n")
-            let eventType = ""
-            let dataLine = ""
+            for (const rawLine of eventBlock.split("\n")) {
+              const line = rawLine.trim()
+              if (!line) continue
 
-            for (const line of lines) {
-              if (line.startsWith("event: ")) {
-                eventType = line.slice(7).trim()
-              } else if (line.startsWith("data: ")) {
-                dataLine = line.slice(6).trim()
+              // Keepalive comment: ": keepalive" - ignore.
+              if (line.startsWith(":")) continue
+
+              if (line.startsWith("data: ")) {
+                const data = line.slice(6)
+                if (data.startsWith("stdout:")) {
+                  process.stdout.write(data.slice(7) + "\n")
+                } else if (data.startsWith("stderr:")) {
+                  process.stderr.write(data.slice(7) + "\n")
+                } else if (data.startsWith("exit:")) {
+                  const code = parseInt(data.slice(5), 10)
+                  exitCode = Number.isFinite(code) ? code : 1
+                }
               }
-            }
-
-            if (!dataLine) continue
-
-            let frame
-            try {
-              frame = JSON.parse(dataLine)
-            } catch {
-              continue
-            }
-
-            if (eventType === "stdout" && frame.data) {
-              // Agent sends base64-encoded combined stdout+stderr.
-              const decoded = Buffer.from(frame.data, "base64")
-              process.stdout.write(decoded)
-            } else if (eventType === "exit") {
-              exitCode = typeof frame.code === "number" ? frame.code : 0
             }
           }
         }

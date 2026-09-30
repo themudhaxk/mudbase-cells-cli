@@ -63,18 +63,31 @@ export async function apiRequest(method, path, body, apiKey) {
  *
  * @param {string} projectId
  * @param {object} opts
- * @param {string} [opts.language] - 'python' or 'node' (default: 'python')
- * @param {string} [opts.languageVersion] - e.g. '3.12' or '22' (default: '3.12')
- * @param {number} [opts.timeoutSeconds] - session hard timeout (default: 300)
- * @returns {Promise<{sessionId, wsUrl, token, expiresAt, language, languageVersion, timeoutAt}>}
+ * @param {string} [opts.language] - 'python', 'javascript', 'go', 'rust', 'php', 'java', 'ruby', 'csharp', or 'bash' (default: 'python')
+ * @param {string} [opts.languageVersion] - e.g. '3.12', '22', '1.23', '1.82', '8.3', '21', '3.3', '8.0' (default: '3.12')
+ * @param {number} [opts.timeoutSeconds] - session hard timeout in seconds, min 30, max 1800 (default: 300)
+ * @param {string} [opts.sizeId] - machine size: micro, small, standard, large, max (default: 'micro')
+ * @param {string} [opts.cellName] - named cell for persistent /workspace volume (1-63 alphanumeric/underscore/hyphen)
+ * @param {boolean} [opts.alwaysOn] - persist the session after client disconnect (flag-gated, requires Growth+ plan)
+ * @param {string} [opts.externalId] - idempotency key for re-attach (printable ASCII, max 128 chars)
+ * @returns {Promise<{sessionId, wsUrl, token, expiresAt, language, languageVersion, timeoutAt, publicUrl, resumed?}>}
  */
 export async function createSession(projectId, opts = {}) {
-  const { language = "python", languageVersion = "3.12", timeoutSeconds = 300 } = opts
-  return apiRequest("POST", `/api/sandboxes/projects/${projectId}`, {
-    language,
-    languageVersion,
-    timeoutSeconds,
-  })
+  const {
+    language = "python",
+    languageVersion = "3.12",
+    timeoutSeconds = 300,
+    sizeId,
+    cellName,
+    alwaysOn,
+    externalId,
+  } = opts
+  const body = { language, languageVersion, timeoutSeconds }
+  if (sizeId !== undefined) body.sizeId = sizeId
+  if (cellName !== undefined) body.cellName = cellName
+  if (alwaysOn !== undefined) body.alwaysOn = alwaysOn
+  if (externalId !== undefined) body.externalId = externalId
+  return apiRequest("POST", `/api/sandboxes/projects/${projectId}`, body)
 }
 
 /**
@@ -124,50 +137,82 @@ export async function closeSession(projectId, sessionId) {
 }
 
 /**
- * Create a snapshot (checkpoint) of a running session's filesystem state.
+ * Create a checkpoint of a running or suspended session's filesystem state.
+ * Requires the session to have been created with a cellName (persistent volume).
  *
  * @param {string} projectId
  * @param {string} sessionId
  * @param {object} [opts]
- * @param {string} [opts.label] - Human-readable label for the snapshot
- * @returns {Promise<{snapshotId, label, createdAt, sizeBytes?}>}
+ * @param {string} [opts.name] - Human-readable label for this checkpoint (max 200 chars)
+ * @returns {Promise<{checkpointId, snapshotId, sizeGb, createdAt}>}
  */
-export async function createSnapshot(projectId, sessionId, opts = {}) {
+export async function createCheckpoint(projectId, sessionId, opts = {}) {
   const body = {}
-  if (opts.label) body.label = opts.label
+  if (opts.name) body.name = opts.name
   return apiRequest(
     "POST",
-    `/api/sandboxes/projects/${projectId}/sessions/${sessionId}/snapshot`,
+    `/api/sandboxes/projects/${projectId}/sessions/${sessionId}/checkpoint`,
     body,
   )
 }
 
 /**
- * List snapshots for a session.
+ * List checkpoints for a session, newest first.
  *
  * @param {string} projectId
  * @param {string} sessionId
- * @returns {Promise<{snapshots: Array<{_id, label, createdAt, sizeBytes?}>}>}
+ * @returns {Promise<{checkpoints: Array<{id, snapshotId, name, sizeGb, createdAt, createdBy}>}>}
  */
-export async function listSnapshots(projectId, sessionId) {
+export async function listCheckpoints(projectId, sessionId) {
   return apiRequest(
     "GET",
-    `/api/sandboxes/projects/${projectId}/sessions/${sessionId}/snapshots`,
+    `/api/sandboxes/projects/${projectId}/sessions/${sessionId}/checkpoints`,
   )
 }
 
 /**
- * Restore a session from a previously saved snapshot.
+ * Delete a checkpoint and its underlying volume snapshot.
  *
  * @param {string} projectId
  * @param {string} sessionId
- * @param {string} snapshotId
- * @returns {Promise<object>} Restored session info
+ * @param {string} checkpointId
+ * @returns {Promise<{success, checkpointId}>}
  */
-export async function restoreSnapshot(projectId, sessionId, snapshotId) {
+export async function deleteCheckpoint(projectId, sessionId, checkpointId) {
+  return apiRequest(
+    "DELETE",
+    `/api/sandboxes/projects/${projectId}/sessions/${sessionId}/checkpoints/${checkpointId}`,
+  )
+}
+
+/**
+ * Start an async restore job from a checkpoint.
+ * Poll getRestoreJob until status is "succeeded" or "failed".
+ *
+ * @param {string} projectId
+ * @param {string} sessionId - Source session whose checkpoint is being restored.
+ * @param {string} checkpointId
+ * @returns {Promise<{restoreId}>}
+ */
+export async function restoreFromCheckpoint(projectId, sessionId, checkpointId) {
   return apiRequest(
     "POST",
     `/api/sandboxes/projects/${projectId}/sessions/${sessionId}/restore`,
-    { snapshotId },
+    { checkpointId },
+  )
+}
+
+/**
+ * Poll a restore job for its status.
+ *
+ * @param {string} projectId
+ * @param {string} sessionId
+ * @param {string} restoreId
+ * @returns {Promise<{restoreId, status, startedAt, completedAt, error, result}>}
+ */
+export async function getRestoreJob(projectId, sessionId, restoreId) {
+  return apiRequest(
+    "GET",
+    `/api/sandboxes/projects/${projectId}/sessions/${sessionId}/restores/${restoreId}`,
   )
 }
