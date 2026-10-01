@@ -8,10 +8,13 @@ Command-line interface for Mudbase Cells: cloud sandbox environments.
 
 ## Install
 
-### Global install from npm (once published)
+### Global install
+
+The CLI is available directly from GitHub. The npm package is coming soon.
 
 ```sh
-npm install -g mudbase-cells-cli
+# TODO(npm-2026-10-04): once published, switch to: npm install -g mudbase-cells-cli
+npm i -g github:themudhaxk/mudbase-cells-cli
 ```
 
 ### Local development install (npm link)
