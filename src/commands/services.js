@@ -101,10 +101,13 @@ export function registerServices(program) {
       requireApiKey()
       const projectId = requireProjectId(opts.project)
 
-      const cmd = [opts.cmd]
-      if (opts.args) {
-        cmd.push(...opts.args.split(",").map((a) => a.trim()).filter(Boolean))
-      }
+      // API expects cmd as a string (the executable) and args as an array of strings.
+      // Do NOT combine them into a single array — the API's startService endpoint
+      // validates `typeof cmd === "string"` and `Array.isArray(args)` separately.
+      const cmd = opts.cmd
+      const args = opts.args
+        ? opts.args.split(",").map((a) => a.trim()).filter(Boolean)
+        : []
 
       const timeoutSeconds = parseInt(opts.timeout, 10)
       if (isNaN(timeoutSeconds) || timeoutSeconds < 1) {
@@ -115,6 +118,7 @@ export function registerServices(program) {
       const serviceOpts = {
         name: opts.name,
         cmd,
+        args,
         cwd: opts.cwd,
       }
       if (opts.port !== undefined && !isNaN(opts.port)) {
