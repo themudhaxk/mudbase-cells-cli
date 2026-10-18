@@ -1,6 +1,6 @@
-# Mudbase Cells CLI
+# Cells CLI by Mudbase
 
-Command-line interface for Mudbase Cells: cloud sandbox environments.
+Command-line interface for Cells by Mudbase: cloud sandbox environments.
 
 ## Requirements
 

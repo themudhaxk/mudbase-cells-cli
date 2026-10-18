@@ -1,7 +1,7 @@
 {
   "name": "mudbase-cells-cli",
   "version": "0.1.0",
-  "description": "CLI for Mudbase Cells - cloud sandbox environments",
+  "description": "CLI for Cells by Mudbase - cloud sandbox environments",
   "type": "module",
   "author": "Mudbase Team",
   "license": "MIT",
