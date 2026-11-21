@@ -1,383 +1,307 @@
 /**
- * Mudbase Cells REST API client.
+ * Cells gateway client.
  *
- * Thin fetch wrapper that injects API key auth and handles error responses.
- * All endpoints are under /api/sandboxes on the configured apiUrl.
+ * Every request goes to the gateway base URL (default https://cells-api.mudbase.dev, override with CELLS_API_URL)
+ * under /v1/cells, with `Authorization: Bearer cells_...`. Route shapes come from the Cells OpenAPI spec
+ * (mudbase-cells-docs openapi/cells-openapi.yaml). Three response kinds exist:
+ *   - JSON: most reads and writes.
+ *   - NDJSON stream: checkpoint create, checkpoint restore and service start. Each line is one event; a
+ *     line with type "error" fails the call.
+ *   - Plain body: exec (the body is the command output; the exit status is the x-cells-exit-code header).
  */
 
 import { getConfig } from "./config.js"
 
+export class CellsApiError extends Error {
+  constructor(message, { status, code, body, retryAfter, upgradeUrl } = {}) {
+    super(message)
+    this.name = "CellsApiError"
+    this.status = status
+    this.code = code
+    this.body = body
+    this.retryAfter = retryAfter
+    this.upgradeUrl = upgradeUrl
+  }
+}
+
+const seg = (value) => encodeURIComponent(String(value))
+
 /**
- * Make an authenticated request to the Mudbase API.
- *
- * @param {string} method - HTTP method
- * @param {string} path - Path under the API base (e.g. /api/sandboxes/projects/:id)
- * @param {object} [body] - Request body (JSON-serialized)
- * @param {string} [apiKey] - Override API key (defaults to config)
- * @returns {Promise<object>} Parsed JSON response body
+ * Build a request URL. A query value that is an array repeats its key (used by exec `cmd`, `env`).
+ * Null and undefined values are dropped.
  */
-export async function apiRequest(method, path, body, apiKey) {
-  const config = getConfig()
-  const key = apiKey || config.apiKey
-
-  const url = `${config.apiUrl}${path}`
-
-  const headers = {
-    "Content-Type": "application/json",
-    "X-API-Key": key,
+export function buildUrl(path, query) {
+  const { apiUrl } = getConfig()
+  const url = new URL(`${apiUrl}${path}`)
+  for (const [key, value] of Object.entries(query || {})) {
+    if (value === undefined || value === null) continue
+    const values = Array.isArray(value) ? value : [value]
+    for (const item of values) url.searchParams.append(key, String(item))
   }
+  return url.toString()
+}
 
-  const opts = { method, headers }
-  if (body !== undefined) {
-    opts.body = JSON.stringify(body)
-  }
+function parseRetryAfter(header, body) {
+  if (header !== null && header !== undefined && /^\d+$/.test(header.trim())) return Number(header.trim())
+  if (body && typeof body.retry_after_seconds === "number") return body.retry_after_seconds
+  return undefined
+}
 
-  let res
+/** Turn a non-2xx gateway answer into a CellsApiError with a readable message. */
+export function errorFromResponse(status, headers, text) {
+  let body = null
   try {
-    res = await fetch(url, opts)
-  } catch (err) {
-    throw new Error(`Network error: ${err.message}`)
-  }
-
-  let data
-  const contentType = res.headers.get("content-type") || ""
-  if (contentType.includes("application/json")) {
-    data = await res.json()
-  } else {
-    data = await res.text()
-  }
-
-  if (!res.ok) {
-    const msg = (typeof data === "object" && data?.error) ? data.error : String(data)
-    const err = new Error(msg)
-    err.status = res.status
-    err.body = data
-    throw err
-  }
-
-  return data
-}
-
-/**
- * Create a new sandbox session.
- *
- * @param {string} projectId
- * @param {object} opts
- * @param {string} [opts.language] - 'python', 'javascript', 'go', 'rust', 'php', 'java', 'ruby', 'csharp', or 'bash' (default: 'python')
- * @param {string} [opts.languageVersion] - e.g. '3.12', '22', '1.23', '1.82', '8.3', '21', '3.3', '8.0' (default: '3.12')
- * @param {number} [opts.timeoutSeconds] - session hard timeout in seconds, min 30, max 1800 (default: 300)
- * @param {string} [opts.sizeId] - machine size: micro, small, standard, large, max (default: 'micro')
- * @param {string} [opts.cellName] - named cell for persistent /workspace volume (1-63 alphanumeric/underscore/hyphen)
- * @param {boolean} [opts.alwaysOn] - persist the session after client disconnect (flag-gated, requires Growth+ plan)
- * @param {string} [opts.externalId] - idempotency key for re-attach (printable ASCII, max 128 chars)
- * @returns {Promise<{sessionId, wsUrl, token, expiresAt, language, languageVersion, timeoutAt, publicUrl, resumed?}>}
- */
-export async function createSession(projectId, opts = {}) {
-  const {
-    language = "python",
-    languageVersion = "3.12",
-    timeoutSeconds = 300,
-    sizeId,
-    cellName,
-    alwaysOn,
-    externalId,
-  } = opts
-  const body = { language, languageVersion, timeoutSeconds }
-  if (sizeId !== undefined) body.sizeId = sizeId
-  if (cellName !== undefined) body.cellName = cellName
-  if (alwaysOn !== undefined) body.alwaysOn = alwaysOn
-  if (externalId !== undefined) body.externalId = externalId
-  return apiRequest("POST", `/api/sandboxes/projects/${projectId}`, body)
-}
-
-/**
- * List running sessions for a project.
- *
- * @param {string} projectId
- * @returns {Promise<{sessions: Array}>}
- */
-export async function listSessions(projectId) {
-  return apiRequest("GET", `/api/sandboxes/projects/${projectId}`)
-}
-
-/**
- * Get a single session's status.
- *
- * @param {string} projectId
- * @param {string} sessionId
- * @returns {Promise<{session: object}>}
- */
-export async function getSession(projectId, sessionId) {
-  return apiRequest("GET", `/api/sandboxes/projects/${projectId}/sessions/${sessionId}`)
-}
-
-/**
- * Issue a fresh gateway JWT for an existing session.
- * Used when connecting to a session created more than 60 seconds ago.
- *
- * @param {string} projectId
- * @param {string} sessionId
- * @returns {Promise<{token, wsUrl, expiresAt}>}
- */
-export async function getConnectToken(projectId, sessionId) {
-  return apiRequest(
-    "POST",
-    `/api/sandboxes/projects/${projectId}/sessions/${sessionId}/connect-token`
-  )
-}
-
-/**
- * Close a session.
- *
- * @param {string} projectId
- * @param {string} sessionId
- */
-export async function closeSession(projectId, sessionId) {
-  return apiRequest("DELETE", `/api/sandboxes/projects/${projectId}/sessions/${sessionId}`)
-}
-
-/**
- * Create a checkpoint of a running or suspended session's filesystem state.
- * Requires the session to have been created with a cellName (persistent volume).
- *
- * @param {string} projectId
- * @param {string} sessionId
- * @param {object} [opts]
- * @param {string} [opts.name] - Human-readable label for this checkpoint (max 200 chars)
- * @returns {Promise<{checkpointId, snapshotId, sizeGb, createdAt}>}
- */
-export async function createCheckpoint(projectId, sessionId, opts = {}) {
-  const body = {}
-  if (opts.name) body.name = opts.name
-  return apiRequest(
-    "POST",
-    `/api/sandboxes/projects/${projectId}/sessions/${sessionId}/checkpoint`,
-    body,
-  )
-}
-
-/**
- * List checkpoints for a session, newest first.
- *
- * @param {string} projectId
- * @param {string} sessionId
- * @returns {Promise<{checkpoints: Array<{id, snapshotId, name, sizeGb, createdAt, createdBy}>}>}
- */
-export async function listCheckpoints(projectId, sessionId) {
-  return apiRequest(
-    "GET",
-    `/api/sandboxes/projects/${projectId}/sessions/${sessionId}/checkpoints`,
-  )
-}
-
-/**
- * Delete a checkpoint and its underlying volume snapshot.
- *
- * @param {string} projectId
- * @param {string} sessionId
- * @param {string} checkpointId
- * @returns {Promise<{success, checkpointId}>}
- */
-export async function deleteCheckpoint(projectId, sessionId, checkpointId) {
-  return apiRequest(
-    "DELETE",
-    `/api/sandboxes/projects/${projectId}/sessions/${sessionId}/checkpoints/${checkpointId}`,
-  )
-}
-
-/**
- * Start an async restore job from a checkpoint.
- * Poll getRestoreJob until status is "succeeded" or "failed".
- *
- * @param {string} projectId
- * @param {string} sessionId - Source session whose checkpoint is being restored.
- * @param {string} checkpointId
- * @returns {Promise<{restoreId}>}
- */
-export async function restoreFromCheckpoint(projectId, sessionId, checkpointId) {
-  return apiRequest(
-    "POST",
-    `/api/sandboxes/projects/${projectId}/sessions/${sessionId}/restore`,
-    { checkpointId },
-  )
-}
-
-/**
- * Poll a restore job for its status.
- *
- * @param {string} projectId
- * @param {string} sessionId
- * @param {string} restoreId
- * @returns {Promise<{restoreId, status, startedAt, completedAt, error, result}>}
- */
-export async function getRestoreJob(projectId, sessionId, restoreId) {
-  return apiRequest(
-    "GET",
-    `/api/sandboxes/projects/${projectId}/sessions/${sessionId}/restores/${restoreId}`,
-  )
-}
-
-// ---------------------------------------------------------------------------
-// File operations
-// ---------------------------------------------------------------------------
-
-/**
- * Write one or more files into a running session's filesystem.
- *
- * Binary content must be base64-encoded and the file entry must include
- * { encoding: "base64" }. Text files may omit encoding (defaults to "text").
- *
- * The server returns HTTP 207 when some files succeeded and others failed.
- * The caller should inspect result.results[] for per-file success/failure.
- * This function treats a 207 as a successful HTTP response and returns the
- * body so the caller can inspect per-file outcomes.
- *
- * @param {string} projectId
- * @param {string} sessionId
- * @param {Array<{path: string, content: string, encoding?: "text"|"base64"}>} files
- * @returns {Promise<{success: boolean, results: Array<{path, success, error?}>}>}
- */
-export async function writeFiles(projectId, sessionId, files) {
-  const config = getConfig()
-  const url = `${config.apiUrl}/api/sandboxes/projects/${projectId}/sessions/${sessionId}/files`
-
-  const headers = {
-    "Content-Type": "application/json",
-    "X-API-Key": config.apiKey,
-  }
-
-  let res
-  try {
-    res = await fetch(url, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({ files }),
-    })
-  } catch (err) {
-    throw new Error(`Network error: ${err.message}`)
-  }
-
-  let data
-  try {
-    data = await res.json()
+    body = text ? JSON.parse(text) : null
   } catch {
-    data = {}
+    body = null
+  }
+  const apiMessage = body && typeof body.message === "string" ? body.message : undefined
+  const code = body && typeof body.error === "string" ? body.error : undefined
+  const retryAfter = parseRetryAfter(headers.get("retry-after"), body)
+  const upgradeUrl = body && typeof body.upgrade_url === "string" ? body.upgrade_url : undefined
+
+  let message
+  if (status === 401) {
+    message = "Invalid or missing API key (Cells keys start with cells_)"
+  } else if (status === 403) {
+    message = `${code || "forbidden"}: ${apiMessage || "plan allowance reached"}`
+    if (upgradeUrl) message += ` (upgrade: ${upgradeUrl})`
+  } else if (status === 404) {
+    message = apiMessage || "Not found"
+  } else if (status === 429) {
+    message = `${code || "rate_limited"}: ${apiMessage || "too many requests"}`
+    if (retryAfter !== undefined) message += ` (retry after ${retryAfter}s)`
+  } else {
+    message = apiMessage || `HTTP ${status}`
+  }
+  return new CellsApiError(message, { status, code, body, retryAfter, upgradeUrl })
+}
+
+/**
+ * Send one request. Returns { status, headers, text } for a 2xx answer and throws CellsApiError otherwise.
+ *
+ * @param {string} method
+ * @param {string} path - path under the gateway base, starting with /v1/cells or /v1/usage
+ * @param {object} [opts]
+ * @param {object} [opts.query] - query values; arrays repeat the key
+ * @param {object} [opts.body] - JSON body
+ * @param {string} [opts.rawBody] - raw octet-stream body (file writes)
+ */
+export async function cellsFetch(method, path, { query, body, rawBody } = {}) {
+  const { apiKey } = getConfig()
+  if (!apiKey) {
+    throw new CellsApiError("API key required (set CELLS_API_KEY or apiKey in ~/.cells/config.json)")
   }
 
-  // 207 Multi-Status: some files may have failed. Return the body so callers
-  // can inspect individual results; treat it as a non-error response.
-  if (!res.ok && res.status !== 207) {
-    const msg = (typeof data === "object" && data?.error) ? data.error : `HTTP ${res.status}`
-    const err = new Error(msg)
-    err.status = res.status
-    err.body = data
-    throw err
+  const headers = { Authorization: `Bearer ${apiKey}` }
+  let payload
+  if (rawBody !== undefined) {
+    headers["Content-Type"] = "application/octet-stream"
+    payload = rawBody
+  } else if (body !== undefined) {
+    headers["Content-Type"] = "application/json"
+    payload = JSON.stringify(body)
   }
 
-  return data
+  const url = buildUrl(path, query)
+  let res
+  try {
+    res = await fetch(url, { method, headers, body: payload })
+  } catch (err) {
+    throw new CellsApiError(`Network error: ${err.message}`)
+  }
+
+  const text = await res.text()
+  if (!res.ok) throw errorFromResponse(res.status, res.headers, text)
+  return { status: res.status, headers: res.headers, text }
 }
 
-/**
- * Read a single file from a running session's filesystem.
- *
- * @param {string} projectId
- * @param {string} sessionId
- * @param {string} remotePath - Path to read, relative to /workspace
- * @returns {Promise<{success, path, content, encoding, sha256, size}>}
- */
-export async function readFile(projectId, sessionId, remotePath) {
-  const encodedPath = encodeURIComponent(remotePath)
-  return apiRequest(
-    "GET",
-    `/api/sandboxes/projects/${projectId}/sessions/${sessionId}/files?path=${encodedPath}`,
-  )
+/** Parse a JSON answer; a body that is not JSON is returned as text. */
+function parseBody(text) {
+  if (!text) return null
+  try {
+    return JSON.parse(text)
+  } catch {
+    return text
+  }
 }
 
-// ---------------------------------------------------------------------------
-// Service lifecycle
-// ---------------------------------------------------------------------------
-
-/**
- * List services running inside a session.
- *
- * @param {string} projectId
- * @param {string} sessionId
- * @returns {Promise<{success, services: Array<{name, status, pid, port?}>}>}
- */
-export async function listServices(projectId, sessionId) {
-  return apiRequest(
-    "GET",
-    `/api/sandboxes/projects/${projectId}/sessions/${sessionId}/services`,
-  )
+/** Parse an NDJSON stream body into its events (one JSON object per non-empty line). */
+export function parseNdjson(text) {
+  return text
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      try {
+        return JSON.parse(line)
+      } catch {
+        throw new CellsApiError(`Malformed stream line: ${line.slice(0, 120)}`)
+      }
+    })
 }
 
-/**
- * Start a named service inside a session.
- *
- * @param {string} projectId
- * @param {string} sessionId
- * @param {object} opts
- * @param {string} opts.name - Service name (alphanumeric/hyphen/underscore)
- * @param {string[]} opts.cmd - Command to run, e.g. ["python", "app.py"]
- * @param {string[]} [opts.args] - Additional args (can be folded into cmd)
- * @param {string} [opts.cwd] - Working directory (default: /workspace)
- * @param {number} [opts.port] - Port the service listens on
- * @param {boolean} [opts.waitForPort] - Wait until the port is reachable (requires port)
- * @param {number} [opts.timeoutMs] - Max wait time for port readiness in ms (default: 30000)
- * @param {Record<string,string>} [opts.env] - Additional environment variables
- * @returns {Promise<{success, name, status, pid?, port?, publicUrl?}>}
- */
-export async function startService(projectId, sessionId, opts) {
-  const { name, cmd, args, cwd, port, waitForPort, timeoutMs, env } = opts
-  const body = { name, cmd }
-  if (args !== undefined) body.args = args
-  if (cwd !== undefined) body.cwd = cwd
-  if (port !== undefined) body.port = port
-  if (waitForPort !== undefined) body.waitForPort = waitForPort
-  if (timeoutMs !== undefined) body.timeoutMs = timeoutMs
-  if (env !== undefined) body.env = env
-  return apiRequest(
-    "POST",
-    `/api/sandboxes/projects/${projectId}/sessions/${sessionId}/services`,
-    body,
-  )
+async function requestJson(method, path, opts) {
+  const { text } = await cellsFetch(method, path, opts)
+  return parseBody(text)
 }
 
-/**
- * Stop a named service running inside a session. No-op if not running.
- *
- * @param {string} projectId
- * @param {string} sessionId
- * @param {string} name - Service name
- * @returns {Promise<{success}>}
- */
-export async function stopService(projectId, sessionId, name) {
-  return apiRequest(
-    "DELETE",
-    `/api/sandboxes/projects/${projectId}/sessions/${sessionId}/services/${encodeURIComponent(name)}`,
-  )
+async function requestNdjson(method, path, opts) {
+  const { text } = await cellsFetch(method, path, opts)
+  const events = parseNdjson(text)
+  const failure = events.find((event) => event && event.type === "error")
+  if (failure) {
+    throw new CellsApiError(failure.error || "Stream reported an error", {
+      code: failure.code || undefined,
+      body: failure,
+    })
+  }
+  return events
 }
 
 // ---------------------------------------------------------------------------
-// Port exposure
+// Cells
+// ---------------------------------------------------------------------------
+
+/** POST /v1/cells. @param {{name: string, url_settings?: object}} body */
+export function createCell(body) {
+  return requestJson("POST", "/v1/cells", { body })
+}
+
+/** GET /v1/cells. */
+export function listCells({ prefix, maxResults, continuationToken } = {}) {
+  return requestJson("GET", "/v1/cells", {
+    query: { prefix, max_results: maxResults, continuation_token: continuationToken },
+  })
+}
+
+/** GET /v1/cells/{name}. */
+export function getCell(name) {
+  return requestJson("GET", `/v1/cells/${seg(name)}`)
+}
+
+/** DELETE /v1/cells/{name}. */
+export async function deleteCell(name) {
+  const { status } = await cellsFetch("DELETE", `/v1/cells/${seg(name)}`)
+  return { status }
+}
+
+/** GET /v1/usage: the caller's usage and limits for the current billing period. */
+export function getUsage() {
+  return requestJson("GET", "/v1/usage")
+}
+
+// ---------------------------------------------------------------------------
+// Exec
 // ---------------------------------------------------------------------------
 
 /**
- * Expose an internal port so the session is reachable from the internet.
- *
- * Returns a publicUrl in the form:
- *   https://sb-{sessionId}-{port}.sandbox.mudbase.dev
- *
- * @param {string} projectId
- * @param {string} sessionId
- * @param {number} port - Internal port to expose (1-65535)
- * @param {"public"|"token-gated"} [access] - Access control (default: "public")
- * @returns {Promise<{success, port, publicUrl, portToken?}>}
+ * POST /v1/cells/{name}/exec. `cmd` is the command and its arguments, one entry per argument.
+ * `env` entries are KEY=VALUE strings. Returns the output body and the exit code from the
+ * x-cells-exit-code header (null when the header is absent or not an integer, for example a gateway refusal).
  */
-export async function exposePort(projectId, sessionId, port, access = "public") {
-  return apiRequest(
-    "POST",
-    `/api/sandboxes/projects/${projectId}/sessions/${sessionId}/expose`,
-    { port, access },
-  )
+export async function execCell(name, { cmd, dir, env } = {}) {
+  const { headers, text } = await cellsFetch("POST", `/v1/cells/${seg(name)}/exec`, {
+    query: { cmd, dir, env },
+  })
+  const raw = headers.get("x-cells-exit-code")
+  const exitCode = raw !== null && /^-?\d+$/.test(raw.trim()) ? Number(raw.trim()) : null
+  return { output: text, exitCode }
+}
+
+// ---------------------------------------------------------------------------
+// Checkpoints
+// ---------------------------------------------------------------------------
+
+/** POST /v1/cells/{name}/checkpoint (NDJSON stream). */
+export function createCheckpoint(name, comment) {
+  return requestNdjson("POST", `/v1/cells/${seg(name)}/checkpoint`, {
+    body: comment ? { comment } : {},
+  })
+}
+
+/** GET /v1/cells/{name}/checkpoints. */
+export function listCheckpoints(name) {
+  return requestJson("GET", `/v1/cells/${seg(name)}/checkpoints`)
+}
+
+/** GET /v1/cells/{name}/checkpoints/{checkpointId}. */
+export function getCheckpoint(name, checkpointId) {
+  return requestJson("GET", `/v1/cells/${seg(name)}/checkpoints/${seg(checkpointId)}`)
+}
+
+/** POST /v1/cells/{name}/checkpoints/{checkpointId}/restore (NDJSON stream). */
+export function restoreCheckpoint(name, checkpointId) {
+  return requestNdjson("POST", `/v1/cells/${seg(name)}/checkpoints/${seg(checkpointId)}/restore`)
+}
+
+// ---------------------------------------------------------------------------
+// Files
+// ---------------------------------------------------------------------------
+
+/** GET /v1/cells/{name}/fs/read. Returns the file content as text. */
+export async function readFile(name, { path, workingDir }) {
+  const { text } = await cellsFetch("GET", `/v1/cells/${seg(name)}/fs/read`, {
+    query: { path, workingDir },
+  })
+  return text
+}
+
+/** GET /v1/cells/{name}/fs/list. */
+export function listDirectory(name, { path, workingDir }) {
+  return requestJson("GET", `/v1/cells/${seg(name)}/fs/list`, { query: { path, workingDir } })
+}
+
+/** PUT /v1/cells/{name}/fs/write with the content as the raw body. */
+export function writeFile(name, { path, workingDir, mode, mkdir }, content) {
+  return requestJson("PUT", `/v1/cells/${seg(name)}/fs/write`, {
+    query: { path, workingDir, mode, mkdir },
+    rawBody: content,
+  })
+}
+
+/** DELETE /v1/cells/{name}/fs/delete. */
+export function deleteFile(name, { path, workingDir, recursive }) {
+  return requestJson("DELETE", `/v1/cells/${seg(name)}/fs/delete`, {
+    body: { path, workingDir, ...(recursive ? { recursive: true } : {}) },
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Services
+// ---------------------------------------------------------------------------
+
+/** GET /v1/cells/{name}/services. */
+export function listServices(name) {
+  return requestJson("GET", `/v1/cells/${seg(name)}/services`)
+}
+
+/** GET /v1/cells/{name}/services/{serviceName}. */
+export function getService(name, serviceName) {
+  return requestJson("GET", `/v1/cells/${seg(name)}/services/${seg(serviceName)}`)
+}
+
+/** POST /v1/cells/{name}/services/{serviceName}/start (NDJSON stream). */
+export function startService(name, serviceName, { duration } = {}) {
+  return requestNdjson("POST", `/v1/cells/${seg(name)}/services/${seg(serviceName)}/start`, {
+    query: { duration },
+  })
+}
+
+/** POST /v1/cells/{name}/services/{serviceName}/stop. */
+export function stopService(name, serviceName) {
+  return requestJson("POST", `/v1/cells/${seg(name)}/services/${seg(serviceName)}/stop`)
+}
+
+/** POST /v1/cells/{name}/services/{serviceName}/restart. */
+export function restartService(name, serviceName) {
+  return requestJson("POST", `/v1/cells/${seg(name)}/services/${seg(serviceName)}/restart`)
+}
+
+/** GET /v1/cells/{name}/services/{serviceName}/logs. Returns the body text. */
+export async function getServiceLogs(name, serviceName, { lines } = {}) {
+  const { text } = await cellsFetch("GET", `/v1/cells/${seg(name)}/services/${seg(serviceName)}/logs`, {
+    query: { lines },
+  })
+  return text
 }

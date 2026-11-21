@@ -1,63 +1,57 @@
 /**
  * cells list
  *
- * List running sandbox sessions for a project.
+ * List the cells in your organization, newest page first as the gateway returns them.
  *
  * Usage:
- *   cells list --project <projectId>
- *   cells list --project <projectId> --json
+ *   cells list
+ *   cells list --prefix dev- --max-results 20
+ *   cells list --continuation-token <token>
+ *   cells list --json
  */
 
-import { requireApiKey, requireProjectId } from "../config.js"
-import { listSessions } from "../client.js"
+import { requireApiKey } from "../config.js"
+import { listCells } from "../client.js"
+import { printJson, printTable } from "../output.js"
 
 export function registerList(program) {
   program
     .command("list")
-    .description("List running sandbox sessions")
-    .option("-p, --project <id>", "Project ID (overrides config / CELLS_PROJECT_ID)")
+    .description("List cells in your organization")
+    .option("--prefix <prefix>", "Only cells whose name starts with this prefix")
+    .option("--max-results <n>", "Maximum results per page (1 to 500, default 50)")
+    .option("--continuation-token <token>", "Token from a previous page")
     .option("--json", "Output raw JSON response")
     .action(async (opts) => {
       requireApiKey()
-      const projectId = requireProjectId(opts.project)
+      const result = await listCells({
+        prefix: opts.prefix,
+        maxResults: opts.maxResults,
+        continuationToken: opts.continuationToken,
+      })
+      const cells = result.cells || []
 
-      try {
-        const result = await listSessions(projectId)
-        const sessions = result.sessions || []
+      if (opts.json) {
+        printJson(result)
+        return
+      }
 
-        if (opts.json) {
-          console.log(JSON.stringify(result, null, 2))
-          return
-        }
-
-        if (sessions.length === 0) {
-          console.log("No active sessions.")
-          return
-        }
-
-        const pad = (s, n) => String(s).padEnd(n)
-        console.log(
-          pad("SESSION ID", 26) +
-          pad("LANGUAGE", 14) +
-          pad("STATUS", 10) +
-          pad("STARTED", 22) +
-          "EXPIRES"
+      if (cells.length === 0) {
+        console.log("No cells.")
+      } else {
+        printTable(
+          [
+            { header: "NAME", get: (c) => c.name },
+            { header: "STATUS", get: (c) => c.status },
+            { header: "CREATED", get: (c) => c.created_at },
+            { header: "URL", get: (c) => c.url },
+          ],
+          cells,
         )
-        console.log("-".repeat(96))
-        for (const s of sessions) {
-          const started = s.startedAt ? new Date(s.startedAt).toISOString() : "N/A"
-          const expires = s.timeoutAt ? new Date(s.timeoutAt).toISOString() : "N/A"
-          console.log(
-            pad(s._id, 26) +
-            pad(`${s.language} ${s.languageVersion}`, 14) +
-            pad(s.status, 10) +
-            pad(started, 22) +
-            expires
-          )
-        }
-      } catch (err) {
-        console.error(`Error: ${err.message}`)
-        process.exit(1)
+      }
+
+      if (result.has_more && result.next_continuation_token) {
+        console.log(`More results: --continuation-token ${result.next_continuation_token}`)
       }
     })
 }
