@@ -1,6 +1,6 @@
 # Mudbase Cells CLI
 
-Command-line interface for Mudbase Cells: cloud sandbox environments.
+Command-line interface for Mudbase Cells: Linux environments with a persistent filesystem, exec, services and checkpoints. The CLI talks to the Cells gateway (`https://cells-api.mudbase.dev`) under `/v1/cells`.
 
 ## Requirements
 
@@ -54,15 +54,17 @@ To unlink later: `npm unlink -g mudbase-cells-cli`
 
 ## Authentication
 
-Set your Mudbase API key in one of these ways (checked in priority order):
+Every request sends your key as `Authorization: Bearer <key>`. Keys look like `cells_<16 hex>.<43 characters>`. Create and revoke keys in the Cells console.
 
-1. Environment variable: `export CELLS_API_KEY=sk_...`
+Set your key in one of these ways (checked in priority order):
+
+1. Environment variable: `export CELLS_API_KEY=cells_...`
 2. Config file at `~/.cells/config.json`:
 
 ```json
 {
-  "apiKey": "sk_...",
-  "projectId": "<your-project-id>"
+  "apiKey": "cells_...",
+  "apiUrl": "https://cells-api.mudbase.dev"
 }
 ```
 
@@ -71,69 +73,100 @@ All configuration options:
 | Key | Env var | Default |
 |-----|---------|---------|
 | `apiKey` | `CELLS_API_KEY` | (required) |
-| `projectId` | `CELLS_PROJECT_ID` | (optional, or pass `--project` each time) |
-| `apiUrl` | `CELLS_API_URL` | `https://api.mudbase.dev` |
-| `gatewayUrl` | `CELLS_GATEWAY_URL` | `wss://ws.sandbox.mudbase.dev` |
+| `apiUrl` | `CELLS_API_URL` | `https://cells-api.mudbase.dev` |
 
 ## Commands
 
-### Create a session
+A cell is addressed by its name, unique within your organization.
+
+### Create a cell
 
 ```sh
-cells create --project <projectId>
-cells create --project <projectId> --language node --runtime-version 22
-cells create --project <projectId> --timeout 600
+cells create my-cell
+cells create my-cell --json
 ```
 
-Options: `--language` (python or node, default: python), `--runtime-version` (e.g. 3.12 or 22), `--timeout` (seconds, default 300), `--json`.
-
-### List sessions
+### List cells
 
 ```sh
-cells list --project <projectId>
-cells list --project <projectId> --json
+cells list
+cells list --prefix dev- --max-results 20
+cells list --continuation-token <token>
+cells list --json
 ```
+
+### Show or delete a cell
+
+```sh
+cells get my-cell
+cells delete my-cell
+```
+
+### Usage
+
+```sh
+cells usage
+```
+
+Prints your usage and limits for the current billing period as JSON.
 
 ### Execute a command
 
 ```sh
-cells exec <sessionId> --project <projectId> -- python -c "print('hello')"
-cells exec <sessionId> --project <projectId> -- bash -c "ls /workspace"
-cells exec <sessionId> --project <projectId> --timeout 60000 -- pip install requests
+cells exec my-cell -- python3 -c "print('hello')"
+cells exec my-cell --dir /home/cell/app -- ls -la
+cells exec my-cell --env MODE=test --env DEBUG=1 -- ./run.sh
 ```
 
-Options: `--timeout` (milliseconds, default 30000), `--workdir` (default `/workspace`).
+Exec is non-interactive: the command's output is printed and the CLI exits with the command's exit status. Put `--` before the command so its own flags are not read as CLI options.
 
-Note: exec streams output via server-sent events. The command runs inside the live session as a subprocess.
-
-### Open an interactive console
+### Files
 
 ```sh
-cells console <sessionId> --project <projectId>
-cells console <sessionId> --project <projectId> --close
+cells files read my-cell notes.txt --working-dir /home/cell
+cells files ls my-cell /home/cell --json
+cells files write my-cell /home/cell/app.py --working-dir /home/cell --from ./app.py --mkdir
+echo hello | cells files write my-cell /home/cell/hello.txt --working-dir /home/cell
+cells files rm my-cell /home/cell/tmp --working-dir /home/cell --recursive
 ```
 
-Opens a raw interactive terminal (PTY) attached to the running session. Press Ctrl+C twice or Ctrl+D to detach. Pass `--close` to terminate the session when you exit.
+Relative paths resolve from `--working-dir`.
 
-### Snapshot (checkpoint and restore)
+### Checkpoints
 
-Snapshot commands save and restore a session's filesystem state.
+A checkpoint saves a cell's state so it can be restored later.
 
 ```sh
-# Create a snapshot
-cells snapshot create <sessionId> --project <projectId>
-cells snapshot create <sessionId> --project <projectId> --label "before-install"
-
-# List snapshots
-cells snapshot list <sessionId> --project <projectId>
-
-# Restore from a snapshot
-cells snapshot restore <sessionId> <snapshotId> --project <projectId>
+cells checkpoint create my-cell --comment "before-install"
+cells checkpoint list my-cell
+cells checkpoint restore my-cell <checkpointId>
 ```
 
-Note: snapshot support requires the backend version that includes the checkpoint/restore API. If the server has not yet enabled this feature, the command exits with code 2 and prints a clear message.
+Create and restore stream progress, printed as one JSON line per event. A line with `"type": "error"` makes the command exit with status 1.
+
+### Services
+
+A service is a long-running process inside a cell, such as a web server.
+
+```sh
+cells services list my-cell
+cells services get my-cell web
+cells services start my-cell web --duration 3600
+cells services logs my-cell web --lines 100
+cells services stop my-cell web
+cells services restart my-cell web
+```
+
+## Errors
+
+| Status | Meaning |
+|--------|---------|
+| 401 | The key is missing or not recognised. Check that it starts with `cells_`. |
+| 403 | A plan allowance is used up. The message names the limit and includes an upgrade link when the gateway sends one. |
+| 404 | The cell, checkpoint or service does not exist. |
+| 429 | The concurrent cell limit or a rate limit is reached. The message shows the retry delay. |
 
 ## Known limitations
 
-- Interactive exec and console require an active session with a running agent. If a session has expired or the agent is unreachable, the command will fail at the connection step.
-- Snapshot create and restore are wired against the documented API endpoints. They will report "not yet available" if run against a server version that has not yet deployed the checkpoint/restore feature.
+- There is no interactive terminal (console) command and no public port command in this version. The gateway does not offer a terminal or port-exposure route yet. Use `cells exec` for commands.
+- Exec output is read as text, so binary output is not reproduced byte for byte. Use `cells files read` for files.
