@@ -28,6 +28,10 @@ This is not a drop-in patch. Scripts written for 0.1.0 must be updated.
 - `cells services restart`, `get` and `logs`.
 - `cells files rm`, with `--recursive` for directories.
 
+## Security note
+
+`cells exec` sends the command arguments and every `--env KEY=VALUE` value to the gateway as URL query parameters. Do not put secrets in exec arguments or `--env` values: URLs can appear in logs along the path.
+
 ## Configuration
 
 | Key | Env var | Default |
