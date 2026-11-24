@@ -1,8 +1,8 @@
-# mudbase-cells-cli 0.1.1
+# mudbase-cells-cli 0.2.0
 
 ## Why this release
 
-Version 0.1.0 on npm calls a retired, project-scoped API path (under `/api/sandboxes/projects`) on `api.mudbase.dev`. That host does not serve Cells, so commands from 0.1.0 do not work. This repository already targets the Cells gateway at `https://cells-api.mudbase.dev` under `/v1/cells`. Version 0.1.1 is the first npm release built from that code.
+Version 0.1.0 on npm calls a retired, project-scoped API path (under `/api/sandboxes/projects`) on `api.mudbase.dev`. That host does not serve Cells, so commands from 0.1.0 do not work. This repository already targets the Cells gateway at `https://cells-api.mudbase.dev` under `/v1/cells`. Version 0.2.0 is the first npm release built from that code. It is a new minor version because the command surface changed (see Breaking changes).
 
 If you installed 0.1.0, upgrade:
 

@@ -543,8 +543,8 @@ describe("release: version agreement, default URL and the retired project-scoped
     assert.equal(result.stdout.trim(), pkg.version)
   })
 
-  test("this release is 0.1.1 (the first release that calls the Cells gateway from npm)", () => {
-    assert.equal(pkg.version, "0.1.1")
+  test("this release is 0.2.0 (the first release that calls the Cells gateway from npm)", () => {
+    assert.equal(pkg.version, "0.2.0")
   })
 
   test("the default API URL is the Cells gateway", () => {
