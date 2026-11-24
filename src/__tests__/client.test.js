@@ -14,6 +14,8 @@ import assert from "node:assert/strict"
 import http from "node:http"
 import { execFile } from "node:child_process"
 import { fileURLToPath } from "node:url"
+import { readFileSync, readdirSync } from "node:fs"
+import { join } from "node:path"
 
 import {
   buildUrl,
@@ -516,5 +518,46 @@ describe("CLI commands wire to the gateway routes", () => {
     const result = await runCli(["list"])
     assert.equal(result.code, 1)
     assert.match(result.stderr, /^Error: Invalid or missing API key/m)
+  })
+})
+
+describe("release: version agreement, default URL and the retired project-scoped API", () => {
+  const ROOT = fileURLToPath(new URL("../..", import.meta.url))
+  const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"))
+  const lock = JSON.parse(readFileSync(join(ROOT, "package-lock.json"), "utf8"))
+
+  /** Every .js file under a directory, recursively. */
+  function jsFiles(dir) {
+    return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+      const path = join(dir, entry.name)
+      if (entry.isDirectory()) return jsFiles(path)
+      return entry.name.endsWith(".js") ? [path] : []
+    })
+  }
+
+  test("package.json, package-lock.json and the CLI --version report the same version", async () => {
+    assert.equal(lock.version, pkg.version)
+    assert.equal(lock.packages[""].version, pkg.version)
+    const result = await runCli(["--version"])
+    assert.equal(result.code, 0, result.stderr)
+    assert.equal(result.stdout.trim(), pkg.version)
+  })
+
+  test("this release is 0.2.0 (the first release that calls the Cells gateway from npm)", () => {
+    assert.equal(pkg.version, "0.2.0")
+  })
+
+  test("the default API URL is the Cells gateway", () => {
+    assert.equal(DEFAULT_API_URL, "https://cells-api.mudbase.dev")
+  })
+
+  test("no source file calls the retired project-scoped API path", () => {
+    // Built from parts so this test file does not contain the forbidden string itself.
+    const retired = ["/api", "sandboxes", "projects"].join("/")
+    const files = jsFiles(join(ROOT, "src"))
+    assert.ok(files.length > 0, "no source files found")
+    for (const file of files) {
+      assert.equal(readFileSync(file, "utf8").includes(retired), false, `${file} uses the retired path`)
+    }
   })
 })

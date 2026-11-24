@@ -1,6 +1,6 @@
 {
   "name": "mudbase-cells-cli",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "CLI for Mudbase Cells - cloud sandbox environments",
   "type": "module",
   "author": "Mudbase Team",
@@ -27,7 +27,8 @@
     "commander": "^12.1.0"
   },
   "files": [
-    "src/"
+    "src/",
+    "!src/__tests__/"
   ],
   "keywords": [
     "mudbase",
