@@ -10,8 +10,10 @@
  *   cells create my-cell
  *   cells list
  *   cells exec my-cell -- python3 -c "print('hello')"
- *   cells files read my-cell notes.txt --working-dir /home/cell
+ *   cells console my-cell
+ *   cells files read my-cell notes.txt --working-dir /tmp
  *   cells checkpoint create my-cell --comment "before deploy"
+ *   cells expose my-cell
  */
 
 import { Command } from "commander"
@@ -23,9 +25,11 @@ import { registerCreate } from "./commands/create.js"
 import { registerList } from "./commands/list.js"
 import { registerCell } from "./commands/cell.js"
 import { registerExec } from "./commands/exec.js"
+import { registerConsole } from "./commands/console.js"
 import { registerCheckpoint } from "./commands/checkpoint.js"
 import { registerFiles } from "./commands/files.js"
 import { registerServices } from "./commands/services.js"
+import { registerExpose } from "./commands/expose.js"
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const pkg = JSON.parse(readFileSync(join(__dirname, "../package.json"), "utf8"))
@@ -41,9 +45,11 @@ registerCreate(program)
 registerList(program)
 registerCell(program)
 registerExec(program)
+registerConsole(program)
 registerCheckpoint(program)
 registerFiles(program)
 registerServices(program)
+registerExpose(program)
 
 program.parseAsync(process.argv).catch((err) => {
   console.error(`Error: ${err.message}`)
