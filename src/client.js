@@ -5,9 +5,9 @@
  * under /v1/cells, with `Authorization: Bearer cells_...`. Route shapes come from the gateway's public surface
  * (mudbase-cells-gateway, its public operation table). Four response kinds exist:
  *   - JSON: most reads and writes.
- *   - NDJSON stream: checkpoint create, checkpoint restore, and service define, start, stop and restart. Each line
- *     is one event; an event of type "error" fails the call.
- *   - Plain body: file reads and service logs (bytes, not JSON).
+ *   - NDJSON stream: checkpoint create, checkpoint restore, and service define, start, stop, restart and logs.
+ *     Each line is one event; an event of type "error" fails the call.
+ *   - Plain body: file reads (bytes, not JSON).
  *   - Exec: a JSON summary (stdout, stderr, exitCode) when the request asks for it with
  *     `Accept: application/json`, or the plain output with the status in the x-cells-exit-code header.
  */
@@ -371,10 +371,11 @@ export function restartService(name, service) {
   return requestStream("POST", serviceActionPath(name, service, "restart"))
 }
 
-/** GET /v1/cells/{name}/services/{service}/logs. Returns the body text. */
-export async function getServiceLogs(name, service, { lines } = {}) {
-  const { text } = await cellsFetch("GET", serviceActionPath(name, service, "logs"), {
-    query: { lines },
-  })
-  return text
+/**
+ * GET /v1/cells/{name}/services/{service}/logs: an event stream of stdout, stderr, error, exit and complete
+ * events. The complete event carries log file paths that name the backend, so the caller prints the events
+ * through printEvents instead of writing the raw body.
+ */
+export function getServiceLogs(name, service, { lines } = {}) {
+  return requestStream("GET", serviceActionPath(name, service, "logs"), { query: { lines } })
 }

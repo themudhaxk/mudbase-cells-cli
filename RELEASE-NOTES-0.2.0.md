@@ -29,7 +29,7 @@ This is not a drop-in patch. Scripts written for 0.1.0 must be updated.
 - `cells console <name>` opens an interactive terminal in the cell.
 - `cells expose <name>` prints the cell's preview URL and waits for it to answer.
 - `cells services define` sets a service's command, arguments, directory, environment and HTTP port.
-- `cells services restart`, `get` and `logs`.
+- `cells services restart`, `get` and `logs`. `logs` prints the service output and event types, not the raw provider JSON (which named backend log paths).
 - `cells files rm`, with `--recursive` for directories.
 - `cells files read --output` saves a file, bytes unchanged; `cells files write` moves bytes too, so binary files round-trip.
 

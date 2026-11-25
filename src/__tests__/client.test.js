@@ -611,6 +611,25 @@ describe("CLI commands wire to the gateway routes", () => {
     assert.doesNotMatch(result.stdout, /"type"/)
   })
 
+  test("cells services logs prints the stream's output and no backend vendor word", async () => {
+    mock.state.reply = (rec, res) => {
+      res.writeHead(200, { "content-type": "application/x-ndjson" })
+      res.end(
+        '{"type":"stdout","data":"tick\\n"}\n' +
+          '{"type":"complete","log_files":{"combined":"/.sprite/logs/services/web.log"}}\n'
+      )
+    }
+    const result = await runCli(["services", "logs", "my-cell", "web", "--lines", "10"])
+    assert.equal(result.code, 0, result.stderr)
+    assert.match(result.stdout, /^tick$/m)
+    assert.match(result.stdout, /^complete$/m)
+    assert.doesNotMatch(result.stdout, /sprite/i)
+    assert.doesNotMatch(result.stdout, /"type"/)
+    assert.equal(lastRequest().method, "GET")
+    assert.equal(lastRequest().url, "/v1/cells/my-cell/services/web/logs?lines=10")
+    assertBearer(lastRequest())
+  })
+
   test("the help lists console and expose", async () => {
     const result = await runCli(["--help"])
     assert.equal(result.code, 0, result.stderr)
