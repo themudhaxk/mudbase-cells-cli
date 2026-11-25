@@ -2,11 +2,12 @@
  * cells exec <name> -- <command> [args...]
  *
  * Run one command in a cell and print its output. The command's exit status becomes the CLI exit status.
- * Runs are non-interactive (no TTY). Output is the response body; the exit status is the x-cells-exit-code header.
+ * Runs are non-interactive (no TTY). Standard output goes to stdout and standard error to stderr, which the
+ * gateway keeps apart in the JSON form of the answer.
  *
  * Usage:
  *   cells exec my-cell -- python3 -c "print('hello')"
- *   cells exec my-cell --dir /home/cell/app -- ls -la
+ *   cells exec my-cell --dir /tmp -- ls -la
  *   cells exec my-cell --env MODE=test --env DEBUG=1 -- ./run.sh
  */
 
@@ -31,13 +32,17 @@ export function registerExec(program) {
         process.exit(1)
       }
 
-      const { output, exitCode } = await execCell(name, {
+      const { stdout, stderr, exitCode, truncated } = await execCell(name, {
         cmd: command,
         dir: opts.dir,
         env: opts.env.length > 0 ? opts.env : undefined,
       })
 
-      process.stdout.write(output)
+      if (stdout) process.stdout.write(stdout)
+      if (stderr) process.stderr.write(stderr)
+      if (truncated) {
+        console.error("Warning: the command output was longer than the gateway returns; it was cut.")
+      }
       if (exitCode === null) {
         console.error("Error: the gateway did not report an exit status for this command")
         process.exitCode = 1

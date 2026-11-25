@@ -118,19 +118,30 @@ cells exec my-cell --dir /home/cell/app -- ls -la
 cells exec my-cell --env MODE=test --env DEBUG=1 -- ./run.sh
 ```
 
-Exec is non-interactive: the command's output is printed and the CLI exits with the command's exit status. Put `--` before the command so its own flags are not read as CLI options.
+Exec is non-interactive: standard output goes to stdout, standard error goes to stderr, and the CLI exits with the command's exit status. Put `--` before the command so its own flags are not read as CLI options.
+
+### Interactive console
+
+```sh
+cells console my-cell
+cells console my-cell --shell sh
+cells console my-cell --json-events
+```
+
+Opens a terminal inside the cell over the gateway's WebSocket exec route. Ctrl+C interrupts the remote shell; press it twice to leave. The cell keeps running after the console exits. The default shell is `bash`; use `--shell sh` if the cell's image has no bash.
 
 ### Files
 
 ```sh
-cells files read my-cell notes.txt --working-dir /home/cell
-cells files ls my-cell /home/cell --json
-cells files write my-cell /home/cell/app.py --working-dir /home/cell --from ./app.py --mkdir
-echo hello | cells files write my-cell /home/cell/hello.txt --working-dir /home/cell
-cells files rm my-cell /home/cell/tmp --working-dir /home/cell --recursive
+cells files read my-cell notes.txt --working-dir /tmp
+cells files read my-cell app.tar.gz --working-dir /tmp --output ./app.tar.gz
+cells files ls my-cell /tmp --json
+cells files write my-cell app.py --working-dir /tmp --from ./app.py --mkdir
+echo hello | cells files write my-cell hello.txt --working-dir /tmp
+cells files rm my-cell /tmp/tmp --working-dir /tmp --recursive
 ```
 
-Relative paths resolve from `--working-dir`.
+Relative paths resolve from `--working-dir`. Content is moved as bytes in both directions, so binary files round-trip unchanged. A new cell has no `/workspace` directory; create it with `cells exec my-cell -- mkdir -p /workspace` before you use it as a working directory.
 
 ### Checkpoints
 
@@ -146,16 +157,29 @@ Create and restore stream progress, printed as one JSON line per event. A line w
 
 ### Services
 
-A service is a long-running process inside a cell, such as a web server.
+A service is a long-running process inside a cell, such as a web server. Define it once, then start, stop or restart it.
 
 ```sh
 cells services list my-cell
+cells services define my-cell web --cmd python3 --args -m,http.server,8000 --http-port 8000
 cells services get my-cell web
-cells services start my-cell web --duration 3600
+cells services start my-cell web --duration 5
 cells services logs my-cell web --lines 100
 cells services stop my-cell web
 cells services restart my-cell web
 ```
+
+`define` creates or updates the definition and the gateway starts it. Lifecycle calls stream progress events, printed one line each.
+
+### Preview URL
+
+```sh
+cells expose my-cell
+cells expose my-cell --readiness-timeout 90
+cells expose my-cell --no-wait
+```
+
+Prints the cell's preview URL and waits for it to answer HTTP 200. The per-port exposure model is retired, so a `port` argument is accepted and ignored. Previews are served only when the gateway deployment enables the preview service, which is off by default; when the URL never answers, the command says so instead of reporting the cell as broken.
 
 ## Errors
 
@@ -168,5 +192,6 @@ cells services restart my-cell web
 
 ## Known limitations
 
-- There is no interactive terminal (console) command and no public port command in this version. The gateway does not offer a terminal or port-exposure route yet. Use `cells exec` for commands.
-- Exec output is read as text, so binary output is not reproduced byte for byte. Use `cells files read` for files.
+- Exec output is a text reading of the gateway's best-effort stream, so a command that writes binary bytes to its output can lose a byte that equals a stream marker. Use `cells files read` for files.
+- The gateway has no checkpoint delete route, so the CLI has no checkpoint delete command.
+- Previews are served only when the gateway deployment enables the preview service; `cells expose` reports that state rather than hiding it.

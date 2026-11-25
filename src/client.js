@@ -2,15 +2,33 @@
  * Cells gateway client.
  *
  * Every request goes to the gateway base URL (default https://cells-api.mudbase.dev, override with CELLS_API_URL)
- * under /v1/cells, with `Authorization: Bearer cells_...`. Route shapes come from the Cells OpenAPI spec
- * (mudbase-cells-docs openapi/cells-openapi.yaml). Three response kinds exist:
+ * under /v1/cells, with `Authorization: Bearer cells_...`. Route shapes come from the gateway's public surface
+ * (mudbase-cells-gateway, its public operation table). Four response kinds exist:
  *   - JSON: most reads and writes.
- *   - NDJSON stream: checkpoint create, checkpoint restore and service start. Each line is one event; a
- *     line with type "error" fails the call.
- *   - Plain body: exec (the body is the command output; the exit status is the x-cells-exit-code header).
+ *   - NDJSON stream: checkpoint create, checkpoint restore, and service define, start, stop and restart. Each line
+ *     is one event; an event of type "error" fails the call.
+ *   - Plain body: file reads and service logs (bytes, not JSON).
+ *   - Exec: a JSON summary (stdout, stderr, exitCode) when the request asks for it with
+ *     `Accept: application/json`, or the plain output with the status in the x-cells-exit-code header.
  */
 
 import { getConfig } from "./config.js"
+import {
+  CELLS_PATH,
+  USAGE_PATH,
+  buildQuery,
+  cellPath,
+  checkpointCreatePath,
+  checkpointPath,
+  checkpointRestorePath,
+  checkpointsPath,
+  execPath,
+  fsPath,
+  parseExitCode,
+  serviceActionPath,
+  servicePath,
+  servicesPath,
+} from "./paths.js"
 
 export class CellsApiError extends Error {
   constructor(message, { status, code, body, retryAfter, upgradeUrl } = {}) {
@@ -24,21 +42,14 @@ export class CellsApiError extends Error {
   }
 }
 
-const seg = (value) => encodeURIComponent(String(value))
-
 /**
- * Build a request URL. A query value that is an array repeats its key (used by exec `cmd`, `env`).
- * Null and undefined values are dropped.
+ * Build a request URL from the configured base and a path. A query value that is an array repeats its key
+ * (exec `cmd`, `env`); null and undefined values are dropped.
  */
 export function buildUrl(path, query) {
   const { apiUrl } = getConfig()
-  const url = new URL(`${apiUrl}${path}`)
-  for (const [key, value] of Object.entries(query || {})) {
-    if (value === undefined || value === null) continue
-    const values = Array.isArray(value) ? value : [value]
-    for (const item of values) url.searchParams.append(key, String(item))
-  }
-  return url.toString()
+  const search = buildQuery(query)
+  return `${apiUrl}${path}${search ? `?${search}` : ""}`
 }
 
 function parseRetryAfter(header, body) {
@@ -77,23 +88,14 @@ export function errorFromResponse(status, headers, text) {
   return new CellsApiError(message, { status, code, body, retryAfter, upgradeUrl })
 }
 
-/**
- * Send one request. Returns { status, headers, text } for a 2xx answer and throws CellsApiError otherwise.
- *
- * @param {string} method
- * @param {string} path - path under the gateway base, starting with /v1/cells or /v1/usage
- * @param {object} [opts]
- * @param {object} [opts.query] - query values; arrays repeat the key
- * @param {object} [opts.body] - JSON body
- * @param {string} [opts.rawBody] - raw octet-stream body (file writes)
- */
-export async function cellsFetch(method, path, { query, body, rawBody } = {}) {
+async function send(method, path, { query, body, rawBody, accept } = {}) {
   const { apiKey } = getConfig()
   if (!apiKey) {
     throw new CellsApiError("API key required (set CELLS_API_KEY or apiKey in ~/.cells/config.json)")
   }
 
   const headers = { Authorization: `Bearer ${apiKey}` }
+  if (accept) headers.Accept = accept
   let payload
   if (rawBody !== undefined) {
     headers["Content-Type"] = "application/octet-stream"
@@ -110,10 +112,33 @@ export async function cellsFetch(method, path, { query, body, rawBody } = {}) {
   } catch (err) {
     throw new CellsApiError(`Network error: ${err.message}`)
   }
+  return { res, url }
+}
 
+/**
+ * Send one request and return the answer as text. Throws CellsApiError for a non-2xx answer.
+ *
+ * @param {string} method
+ * @param {string} path - path under the gateway base, starting with /v1/cells or /v1/usage
+ * @param {object} [opts]
+ * @param {object} [opts.query] - query values; arrays repeat the key
+ * @param {object} [opts.body] - JSON body
+ * @param {string|Buffer} [opts.rawBody] - raw octet-stream body (file writes)
+ * @param {string} [opts.accept] - Accept header
+ */
+export async function cellsFetch(method, path, opts = {}) {
+  const { res } = await send(method, path, opts)
   const text = await res.text()
   if (!res.ok) throw errorFromResponse(res.status, res.headers, text)
   return { status: res.status, headers: res.headers, text }
+}
+
+/** Send one request and return the answer as bytes (file reads, logs). */
+export async function cellsFetchBuffer(method, path, opts = {}) {
+  const { res } = await send(method, path, opts)
+  const buffer = Buffer.from(await res.arrayBuffer())
+  if (!res.ok) throw errorFromResponse(res.status, res.headers, buffer.toString("utf8"))
+  return { status: res.status, headers: res.headers, buffer }
 }
 
 /** Parse a JSON answer; a body that is not JSON is returned as text. */
@@ -141,17 +166,31 @@ export function parseNdjson(text) {
     })
 }
 
+/** The failure an event stream reports, or null. The gateway relays the upstream shape, which uses `error`. */
+export function streamFailure(events) {
+  return events.find((event) => event && event.type === "error") || null
+}
+
 async function requestJson(method, path, opts) {
   const { text } = await cellsFetch(method, path, opts)
   return parseBody(text)
 }
 
-async function requestNdjson(method, path, opts) {
-  const { text } = await cellsFetch(method, path, opts)
+/**
+ * A stream answer. Live gateway answers are NDJSON, but a checkpoint list can also be a JSON array, so a
+ * body whose content type is JSON is parsed as JSON and returned as one value.
+ */
+async function requestStream(method, path, opts) {
+  const { headers, text } = await cellsFetch(method, path, opts)
+  const contentType = headers.get("content-type") || ""
+  if (!contentType.includes("ndjson")) {
+    const parsed = parseBody(text)
+    return Array.isArray(parsed) ? parsed : [parsed]
+  }
   const events = parseNdjson(text)
-  const failure = events.find((event) => event && event.type === "error")
+  const failure = streamFailure(events)
   if (failure) {
-    throw new CellsApiError(failure.error || "Stream reported an error", {
+    throw new CellsApiError(failure.error || failure.data || "Stream reported an error", {
       code: failure.code || undefined,
       body: failure,
     })
@@ -165,30 +204,30 @@ async function requestNdjson(method, path, opts) {
 
 /** POST /v1/cells. @param {{name: string, url_settings?: object}} body */
 export function createCell(body) {
-  return requestJson("POST", "/v1/cells", { body })
+  return requestJson("POST", CELLS_PATH, { body })
 }
 
 /** GET /v1/cells. */
 export function listCells({ prefix, maxResults, continuationToken } = {}) {
-  return requestJson("GET", "/v1/cells", {
+  return requestJson("GET", CELLS_PATH, {
     query: { prefix, max_results: maxResults, continuation_token: continuationToken },
   })
 }
 
-/** GET /v1/cells/{name}. */
+/** GET /v1/cells/{name}. The cell is at the top level and repeated under `data`. */
 export function getCell(name) {
-  return requestJson("GET", `/v1/cells/${seg(name)}`)
+  return requestJson("GET", cellPath(name))
 }
 
 /** DELETE /v1/cells/{name}. */
 export async function deleteCell(name) {
-  const { status } = await cellsFetch("DELETE", `/v1/cells/${seg(name)}`)
+  const { status } = await cellsFetch("DELETE", cellPath(name))
   return { status }
 }
 
 /** GET /v1/usage: the caller's usage and limits for the current billing period. */
 export function getUsage() {
-  return requestJson("GET", "/v1/usage")
+  return requestJson("GET", USAGE_PATH)
 }
 
 // ---------------------------------------------------------------------------
@@ -197,72 +236,96 @@ export function getUsage() {
 
 /**
  * POST /v1/cells/{name}/exec. `cmd` is the command and its arguments, one entry per argument.
- * `env` entries are KEY=VALUE strings. Returns the output body and the exit code from the
- * x-cells-exit-code header (null when the header is absent or not an integer, for example a gateway refusal).
+ * `env` entries are KEY=VALUE strings.
+ *
+ * The request asks for the JSON form, which separates stdout from stderr and carries the exit status as a
+ * number. A gateway that answers the plain form instead is read as output plus the x-cells-exit-code header.
+ * The exit status is null when it is unknown (a gateway refusal, or output that ended without an exit frame).
+ *
+ * @returns {Promise<{stdout: string, stderr: string, exitCode: number|null, truncated: boolean}>}
  */
 export async function execCell(name, { cmd, dir, env } = {}) {
-  const { headers, text } = await cellsFetch("POST", `/v1/cells/${seg(name)}/exec`, {
+  const { headers, text } = await cellsFetch("POST", execPath(name), {
     query: { cmd, dir, env },
+    accept: "application/json",
   })
-  const raw = headers.get("x-cells-exit-code")
-  const exitCode = raw !== null && /^-?\d+$/.test(raw.trim()) ? Number(raw.trim()) : null
-  return { output: text, exitCode }
+  const headerExit = parseExitCode(headers.get("x-cells-exit-code"))
+  const contentType = headers.get("content-type") || ""
+  if (contentType.includes("application/json")) {
+    let body = null
+    try {
+      body = JSON.parse(text)
+    } catch {
+      body = null
+    }
+    if (body && typeof body === "object" && !Array.isArray(body)) {
+      return {
+        stdout: typeof body.stdout === "string" ? body.stdout : "",
+        stderr: typeof body.stderr === "string" ? body.stderr : "",
+        exitCode: typeof body.exitCode === "number" ? body.exitCode : headerExit,
+        truncated: body.truncated === true,
+      }
+    }
+  }
+  return { stdout: text, stderr: "", exitCode: headerExit, truncated: false }
 }
 
 // ---------------------------------------------------------------------------
 // Checkpoints
 // ---------------------------------------------------------------------------
 
-/** POST /v1/cells/{name}/checkpoint (NDJSON stream). */
+/** POST /v1/cells/{name}/checkpoint (NDJSON stream of info and complete events). */
 export function createCheckpoint(name, comment) {
-  return requestNdjson("POST", `/v1/cells/${seg(name)}/checkpoint`, {
+  return requestStream("POST", checkpointCreatePath(name), {
     body: comment ? { comment } : {},
   })
 }
 
-/** GET /v1/cells/{name}/checkpoints. */
-export function listCheckpoints(name) {
-  return requestJson("GET", `/v1/cells/${seg(name)}/checkpoints`)
+/** GET /v1/cells/{name}/checkpoints: a JSON array of checkpoints. */
+export async function listCheckpoints(name) {
+  const result = await requestStream("GET", checkpointsPath(name))
+  if (Array.isArray(result)) return result
+  return result.checkpoints || []
 }
 
 /** GET /v1/cells/{name}/checkpoints/{checkpointId}. */
 export function getCheckpoint(name, checkpointId) {
-  return requestJson("GET", `/v1/cells/${seg(name)}/checkpoints/${seg(checkpointId)}`)
+  return requestJson("GET", checkpointPath(name, checkpointId))
 }
 
-/** POST /v1/cells/{name}/checkpoints/{checkpointId}/restore (NDJSON stream). */
+/** POST /v1/cells/{name}/checkpoints/{checkpointId}/restore (NDJSON stream of progress events). */
 export function restoreCheckpoint(name, checkpointId) {
-  return requestNdjson("POST", `/v1/cells/${seg(name)}/checkpoints/${seg(checkpointId)}/restore`)
+  return requestStream("POST", checkpointRestorePath(name, checkpointId))
 }
 
 // ---------------------------------------------------------------------------
 // Files
 // ---------------------------------------------------------------------------
 
-/** GET /v1/cells/{name}/fs/read. Returns the file content as text. */
+/** GET /v1/cells/{name}/fs/read. Returns the file content as bytes. */
 export async function readFile(name, { path, workingDir }) {
-  const { text } = await cellsFetch("GET", `/v1/cells/${seg(name)}/fs/read`, {
+  const { buffer } = await cellsFetchBuffer("GET", fsPath(name, "read"), {
     query: { path, workingDir },
   })
-  return text
+  return buffer
 }
 
 /** GET /v1/cells/{name}/fs/list. */
 export function listDirectory(name, { path, workingDir }) {
-  return requestJson("GET", `/v1/cells/${seg(name)}/fs/list`, { query: { path, workingDir } })
+  return requestJson("GET", fsPath(name, "list"), { query: { path, workingDir } })
 }
 
 /** PUT /v1/cells/{name}/fs/write with the content as the raw body. */
 export function writeFile(name, { path, workingDir, mode, mkdir }, content) {
-  return requestJson("PUT", `/v1/cells/${seg(name)}/fs/write`, {
-    query: { path, workingDir, mode, mkdir },
+  return requestJson("PUT", fsPath(name, "write"), {
+    query: { path, workingDir, mode, mkdir: mkdir ? "true" : undefined },
     rawBody: content,
   })
 }
 
 /** DELETE /v1/cells/{name}/fs/delete. */
 export function deleteFile(name, { path, workingDir, recursive }) {
-  return requestJson("DELETE", `/v1/cells/${seg(name)}/fs/delete`, {
+  return requestJson("DELETE", fsPath(name, "delete"), {
     body: { path, workingDir, ...(recursive ? { recursive: true } : {}) },
   })
 }
@@ -271,36 +334,46 @@ export function deleteFile(name, { path, workingDir, recursive }) {
 // Services
 // ---------------------------------------------------------------------------
 
-/** GET /v1/cells/{name}/services. */
+/** GET /v1/cells/{name}/services. Each entry carries its running state under `state`. */
 export function listServices(name) {
-  return requestJson("GET", `/v1/cells/${seg(name)}/services`)
+  return requestJson("GET", servicesPath(name))
 }
 
-/** GET /v1/cells/{name}/services/{serviceName}. */
-export function getService(name, serviceName) {
-  return requestJson("GET", `/v1/cells/${seg(name)}/services/${seg(serviceName)}`)
+/** GET /v1/cells/{name}/services/{service}. */
+export function getService(name, service) {
+  return requestJson("GET", servicePath(name, service))
 }
 
-/** POST /v1/cells/{name}/services/{serviceName}/start (NDJSON stream). */
-export function startService(name, serviceName, { duration } = {}) {
-  return requestNdjson("POST", `/v1/cells/${seg(name)}/services/${seg(serviceName)}/start`, {
+/**
+ * PUT /v1/cells/{name}/services/{service}: create or update the definition. The gateway streams the
+ * definition's first start, so the answer is an event stream (started, stdout, complete).
+ *
+ * @param {object} definition - { cmd, args, needs, dir?, env?, http_port? }
+ */
+export function defineService(name, service, definition) {
+  return requestStream("PUT", servicePath(name, service), { body: definition })
+}
+
+/** POST /v1/cells/{name}/services/{service}/start (NDJSON stream). */
+export function startService(name, service, { duration } = {}) {
+  return requestStream("POST", serviceActionPath(name, service, "start"), {
     query: { duration },
   })
 }
 
-/** POST /v1/cells/{name}/services/{serviceName}/stop. */
-export function stopService(name, serviceName) {
-  return requestJson("POST", `/v1/cells/${seg(name)}/services/${seg(serviceName)}/stop`)
+/** POST /v1/cells/{name}/services/{service}/stop (NDJSON stream: stopping, stopped, complete). */
+export function stopService(name, service) {
+  return requestStream("POST", serviceActionPath(name, service, "stop"))
 }
 
-/** POST /v1/cells/{name}/services/{serviceName}/restart. */
-export function restartService(name, serviceName) {
-  return requestJson("POST", `/v1/cells/${seg(name)}/services/${seg(serviceName)}/restart`)
+/** POST /v1/cells/{name}/services/{service}/restart (NDJSON stream). */
+export function restartService(name, service) {
+  return requestStream("POST", serviceActionPath(name, service, "restart"))
 }
 
-/** GET /v1/cells/{name}/services/{serviceName}/logs. Returns the body text. */
-export async function getServiceLogs(name, serviceName, { lines } = {}) {
-  const { text } = await cellsFetch("GET", `/v1/cells/${seg(name)}/services/${seg(serviceName)}/logs`, {
+/** GET /v1/cells/{name}/services/{service}/logs. Returns the body text. */
+export async function getServiceLogs(name, service, { lines } = {}) {
+  const { text } = await cellsFetch("GET", serviceActionPath(name, service, "logs"), {
     query: { lines },
   })
   return text

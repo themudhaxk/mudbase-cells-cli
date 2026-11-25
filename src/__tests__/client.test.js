@@ -31,7 +31,10 @@ import {
   readFile,
   writeFile,
   deleteFile,
+  defineService,
   startService,
+  stopService,
+  restartService,
   CellsApiError,
   parseNdjson,
 } from "../client.js"
@@ -231,23 +234,31 @@ describe("cell routes: method, path and Bearer auth", () => {
 })
 
 describe("exec, checkpoints, files, services", () => {
-  test("execCell POSTs the command as repeated cmd values and returns the plain body and exit code", async () => {
-    mock.state.reply = (rec, res) => {
-      res.writeHead(200, { "content-type": "text/plain", "x-cells-exit-code": "3" })
-      res.end("hello\n")
-    }
-    const result = await execCell("my-cell", { cmd: ["python3", "-c", "print(1)"], dir: "/home/cell", env: ["A=1"] })
-    assert.deepEqual(result, { output: "hello\n", exitCode: 3 })
+  test("execCell POSTs the command as repeated cmd values and reads the JSON form", async () => {
+    mock.state.reply = (rec, res) =>
+      sendJson(res, 200, { stdout: "a\n", stderr: "b\n", exitCode: 3, signal: null, spawnError: null, truncated: false })
+    const result = await execCell("my-cell", { cmd: ["python3", "-c", "print(1)"], dir: "/workspace", env: ["A=1"] })
+    assert.deepEqual(result, { stdout: "a\n", stderr: "b\n", exitCode: 3, truncated: false })
     assert.equal(lastRequest().method, "POST")
+    assert.equal(lastRequest().headers.accept, "application/json")
     const url = new URL(`${mock.url}${lastRequest().url}`)
     assert.equal(url.pathname, "/v1/cells/my-cell/exec")
     assert.deepEqual(url.searchParams.getAll("cmd"), ["python3", "-c", "print(1)"])
-    assert.equal(url.searchParams.get("dir"), "/home/cell")
+    assert.equal(url.searchParams.get("dir"), "/workspace")
     assert.deepEqual(url.searchParams.getAll("env"), ["A=1"])
     assertBearer(lastRequest())
   })
 
-  test("execCell reports a null exit code when the header is absent", async () => {
+  test("execCell falls back to the plain body and the exit-code header", async () => {
+    mock.state.reply = (rec, res) => {
+      res.writeHead(200, { "content-type": "text/plain", "x-cells-exit-code": "3" })
+      res.end("hello\n")
+    }
+    const result = await execCell("my-cell", { cmd: ["true"] })
+    assert.deepEqual(result, { stdout: "hello\n", stderr: "", exitCode: 3, truncated: false })
+  })
+
+  test("execCell reports a null exit code when the header is absent and the body is not JSON", async () => {
     mock.state.reply = (rec, res) => {
       res.writeHead(200, { "content-type": "text/plain" })
       res.end("")
@@ -299,15 +310,16 @@ describe("exec, checkpoints, files, services", () => {
     assertBearer(lastRequest())
   })
 
-  test("readFile GETs fs/read with path and workingDir and returns the text", async () => {
+  test("readFile GETs fs/read with path and workingDir and returns bytes", async () => {
     mock.state.reply = (rec, res) => {
       res.writeHead(200, { "content-type": "application/octet-stream" })
       res.end("file body")
     }
-    const text = await readFile("my-cell", { path: "notes.txt", workingDir: "/home/cell" })
-    assert.equal(text, "file body")
+    const content = await readFile("my-cell", { path: "notes.txt", workingDir: "/tmp" })
+    assert.ok(Buffer.isBuffer(content))
+    assert.equal(content.toString("utf8"), "file body")
     assert.equal(lastRequest().method, "GET")
-    assert.equal(lastRequest().url, "/v1/cells/my-cell/fs/read?path=notes.txt&workingDir=%2Fhome%2Fcell")
+    assert.equal(lastRequest().url, "/v1/cells/my-cell/fs/read?path=notes.txt&workingDir=%2Ftmp")
     assertBearer(lastRequest())
   })
 
@@ -334,12 +346,58 @@ describe("exec, checkpoints, files, services", () => {
   test("startService POSTs to services/{name}/start with duration", async () => {
     mock.state.reply = (rec, res) => {
       res.writeHead(200, { "content-type": "application/x-ndjson" })
-      res.end('{"type":"complete"}\n')
+      res.end('{"type":"started"}\n{"type":"complete"}\n')
     }
     await startService("my-cell", "web", { duration: 30 })
     assert.equal(lastRequest().method, "POST")
     assert.equal(lastRequest().url, "/v1/cells/my-cell/services/web/start?duration=30")
     assertBearer(lastRequest())
+  })
+
+  test("defineService PUTs the definition and parses the stream", async () => {
+    mock.state.reply = (rec, res) => {
+      res.writeHead(200, { "content-type": "application/x-ndjson" })
+      res.end('{"type":"started"}\n{"type":"stdout","data":"up\\n"}\n{"type":"complete"}\n')
+    }
+    const events = await defineService("my-cell", "web", { cmd: "python3", args: ["-m", "http.server"], needs: [] })
+    assert.deepEqual(events.map((event) => event.type), ["started", "stdout", "complete"])
+    assert.equal(lastRequest().method, "PUT")
+    assert.equal(lastRequest().url, "/v1/cells/my-cell/services/web")
+    assert.deepEqual(JSON.parse(lastRequest().body), { cmd: "python3", args: ["-m", "http.server"], needs: [] })
+    assertBearer(lastRequest())
+  })
+
+  test("stopService and restartService parse their NDJSON streams", async () => {
+    mock.state.reply = (rec, res) => {
+      res.writeHead(200, { "content-type": "application/x-ndjson" })
+      res.end('{"type":"stopping"}\n{"type":"stopped","exit_code":143}\n{"type":"complete"}\n')
+    }
+    const stopped = await stopService("my-cell", "web")
+    assert.equal(stopped[1].exit_code, 143)
+    assert.equal(lastRequest().url, "/v1/cells/my-cell/services/web/stop")
+    assertBearer(lastRequest())
+
+    mock.state.reply = (rec, res) => {
+      res.writeHead(200, { "content-type": "application/x-ndjson" })
+      res.end('{"type":"complete"}\n')
+    }
+    await restartService("my-cell", "web")
+    assert.equal(lastRequest().method, "POST")
+    assert.equal(lastRequest().url, "/v1/cells/my-cell/services/web/restart")
+    assertBearer(lastRequest())
+  })
+
+  test("listCheckpoints accepts a JSON page as well as an event stream", async () => {
+    mock.state.reply = (rec, res) => sendJson(res, 200, [{ id: "v1", comment: "initial" }])
+    const page = await listCheckpoints("my-cell")
+    assert.deepEqual(page, [{ id: "v1", comment: "initial" }])
+
+    mock.state.reply = (rec, res) => {
+      res.writeHead(200, { "content-type": "application/x-ndjson" })
+      res.end('{"type":"Checkpoint","id":"v2"}\n{"type":"Done"}\n')
+    }
+    const events = await listCheckpoints("my-cell")
+    assert.equal(events[0].id, "v2")
   })
 
   test("parseNdjson rejects a malformed line", () => {
@@ -511,6 +569,53 @@ describe("CLI commands wire to the gateway routes", () => {
     assert.equal(lastRequest().method, "GET")
     assert.equal(lastRequest().url, "/v1/cells/my-cell/checkpoints")
     assertBearer(lastRequest())
+  })
+
+  test("cells services list reads the nested state object", async () => {
+    mock.state.reply = (rec, res) =>
+      sendJson(res, 200, [
+        { name: "web", http_port: 8080, state: { name: "web", status: "running", pid: 42 } },
+      ])
+    const result = await runCli(["services", "list", "my-cell"])
+    assert.equal(result.code, 0, result.stderr)
+    assert.match(result.stdout, /NAME/)
+    assert.match(result.stdout, /running/)
+    assert.match(result.stdout, /42/)
+  })
+
+  test("cells checkpoint create prints Cells vocabulary and no raw JSON", async () => {
+    mock.state.reply = (rec, res) => {
+      res.writeHead(200, { "content-type": "application/x-ndjson" })
+      res.end('{"type":"info","data":"sprite checkpoint restore v2"}\n{"type":"complete"}\n')
+    }
+    const result = await runCli(["checkpoint", "create", "my-cell"])
+    assert.equal(result.code, 0, result.stderr)
+    assert.match(result.stdout, /info: cell checkpoint restore v2/)
+    assert.doesNotMatch(result.stdout, /sprite/i)
+    assert.doesNotMatch(result.stdout, /"type"/)
+    assert.match(result.stdout, /^complete$/m)
+  })
+
+  test("cells services define prints the stream's output and event types, not raw JSON", async () => {
+    mock.state.reply = (rec, res) => {
+      res.writeHead(200, { "content-type": "application/x-ndjson" })
+      res.end('{"type":"started"}\n{"type":"stdout","data":"service-up\\n"}\n{"type":"complete"}\n')
+    }
+    const result = await runCli([
+      "services", "define", "my-cell", "web", "--cmd", "sh", "--args", "-c,echo service-up",
+    ])
+    assert.equal(result.code, 0, result.stderr)
+    assert.match(result.stdout, /^started$/m)
+    assert.match(result.stdout, /^service-up$/m)
+    assert.match(result.stdout, /^complete$/m)
+    assert.doesNotMatch(result.stdout, /"type"/)
+  })
+
+  test("the help lists console and expose", async () => {
+    const result = await runCli(["--help"])
+    assert.equal(result.code, 0, result.stderr)
+    assert.match(result.stdout, /console/)
+    assert.match(result.stdout, /expose/)
   })
 
   test("cells exits 1 with an Error line on a gateway refusal", async () => {

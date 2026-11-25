@@ -2,16 +2,18 @@
  * cells files read|ls|write|rm
  *
  * Work with a cell's filesystem. Paths are resolved from --working-dir when they are relative.
+ * Content is moved as bytes in both directions, so a binary file round-trips unchanged.
  *
  * Usage:
- *   cells files read my-cell notes.txt --working-dir /home/cell
- *   cells files ls my-cell /home/cell --json
- *   cells files write my-cell /home/cell/app.py --working-dir /home/cell --from ./app.py --mkdir
- *   echo hello | cells files write my-cell /home/cell/hello.txt --working-dir /home/cell
- *   cells files rm my-cell /home/cell/tmp --working-dir /home/cell --recursive
+ *   cells files read my-cell notes.txt --working-dir /tmp
+ *   cells files read my-cell app.tar.gz --working-dir /tmp --output ./app.tar.gz
+ *   cells files ls my-cell /tmp --json
+ *   cells files write my-cell app.py --working-dir /tmp --from ./app.py --mkdir
+ *   echo hello | cells files write my-cell hello.txt --working-dir /tmp
+ *   cells files rm my-cell /tmp/tmp --working-dir /tmp --recursive
  */
 
-import { readFileSync } from "fs"
+import { readFileSync, writeFileSync } from "fs"
 import { requireApiKey } from "../config.js"
 import { deleteFile, listDirectory, readFile, writeFile } from "../client.js"
 import { printJson, printTable, readStdin } from "../output.js"
@@ -21,11 +23,18 @@ export function registerFiles(program) {
 
   files
     .command("read <name> <path>")
-    .description("Print a file's content")
+    .description("Print a file's content, or save it with --output")
     .option("--working-dir <dir>", "Directory that relative paths resolve from")
+    .option("--output <localFile>", "Save the content to a local file instead of printing it")
     .action(async (name, path, opts) => {
       requireApiKey()
-      process.stdout.write(await readFile(name, { path, workingDir: opts.workingDir }))
+      const content = await readFile(name, { path, workingDir: opts.workingDir })
+      if (opts.output) {
+        writeFileSync(opts.output, content)
+        console.log(`Saved ${content.length} bytes to ${opts.output}`)
+        return
+      }
+      process.stdout.write(content)
     })
 
   files
@@ -60,7 +69,7 @@ export function registerFiles(program) {
     .option("--mkdir", "Create parent directories that do not exist")
     .action(async (name, path, opts) => {
       requireApiKey()
-      const content = opts.from ? readFileSync(opts.from, "utf8") : await readStdin()
+      const content = opts.from ? readFileSync(opts.from) : await readStdin()
       const result = await writeFile(
         name,
         { path, workingDir: opts.workingDir, mode: opts.mode, mkdir: opts.mkdir ? true : undefined },

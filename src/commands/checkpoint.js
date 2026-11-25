@@ -2,7 +2,8 @@
  * cells checkpoint create|list|restore
  *
  * A checkpoint saves a cell's state so it can be restored later. Create and restore stream progress events;
- * each event is printed as one JSON line, and a failed event stops the command with exit status 1.
+ * each event is printed as one "<type>: <message>" line in Cells vocabulary, and a failed event stops the
+ * command with exit status 1. The gateway has no checkpoint delete route, so there is no delete command.
  *
  * Usage:
  *   cells checkpoint create my-cell --comment "before deploy"
@@ -12,11 +13,7 @@
 
 import { requireApiKey } from "../config.js"
 import { createCheckpoint, listCheckpoints, restoreCheckpoint } from "../client.js"
-import { printJson, printTable } from "../output.js"
-
-function printEvents(events) {
-  for (const event of events) console.log(JSON.stringify(event))
-}
+import { printEvents, printJson, printTable } from "../output.js"
 
 export function registerCheckpoint(program) {
   const checkpoint = program.command("checkpoint").description("Create, list and restore cell checkpoints")
