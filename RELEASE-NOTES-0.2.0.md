@@ -32,6 +32,7 @@ This is not a drop-in patch. Scripts written for 0.1.0 must be updated.
 - `cells services restart`, `get` and `logs`. `logs` prints the service output and event types, not the raw provider JSON (which named backend log paths).
 - `cells files rm`, with `--recursive` for directories.
 - `cells files read --output` saves a file, bytes unchanged; `cells files write` moves bytes too, so binary files round-trip.
+- Stream output is sanitized: ANSI and OSC escapes are stripped from event data and type, a malformed frame reports only its type and byte length, a body that is not an event stream fails loudly, and a response over `CELLS_MAX_BODY_BYTES` (64 MiB by default) is refused with a clear error.
 
 ## Security note
 

@@ -7,7 +7,7 @@
 import { describe, it } from "node:test"
 import assert from "node:assert/strict"
 
-import { cellWords } from "../output.js"
+import { cellWords, stripEscapes } from "../output.js"
 
 describe("cellWords", () => {
   it("maps the backend's word for a cell in lower case", () => {
@@ -29,5 +29,26 @@ describe("cellWords", () => {
 
   it("does not touch a word that merely contains the letters", () => {
     assert.equal(cellWords("sprightly"), "sprightly")
+  })
+})
+
+describe("stripEscapes", () => {
+  const payloads = [
+    "\x1b[2J",
+    "\x1b]8;;https://evil.example\x07LINK\x1b]8;;\x07",
+    "\x1b]52;c;SGVsbG8=\x07",
+  ]
+
+  it("removes the three escape payloads so no ESC byte remains", () => {
+    for (const payload of payloads) {
+      const cleaned = stripEscapes(`a${payload}b`)
+      assert.equal(cleaned.includes("\x1b"), false)
+      assert.equal(cleaned.includes("evil.example"), false)
+      assert.equal(cleaned.includes("SGVsbG8"), false)
+    }
+  })
+
+  it("keeps ordinary text and newlines", () => {
+    assert.equal(stripEscapes("SERVICE_LOG_LINE\n"), "SERVICE_LOG_LINE\n")
   })
 })

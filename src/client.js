@@ -115,6 +115,56 @@ async function send(method, path, { query, body, rawBody, accept } = {}) {
   return { res, url }
 }
 
+/** Default cap on a buffered response body. Override with CELLS_MAX_BODY_BYTES. */
+const DEFAULT_MAX_BODY_BYTES = 64 * 1024 * 1024
+
+function maxBodyBytes() {
+  const raw = process.env.CELLS_MAX_BODY_BYTES
+  const parsed = raw ? Number(raw) : NaN
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : DEFAULT_MAX_BODY_BYTES
+}
+
+/**
+ * Read a response body into one Buffer, refusing to buffer more than the cap. A declared Content-Length
+ * over the cap is refused before any body byte is read; a body that grows past the cap is cancelled. The
+ * error names only the sizes, never body content.
+ */
+async function readBodyCapped(res) {
+  const max = maxBodyBytes()
+  const declared = Number(res.headers.get("content-length"))
+  if (Number.isFinite(declared) && declared > max) {
+    throw new CellsApiError(`Response body is ${declared} bytes, over the ${max} byte limit; it was not read`)
+  }
+  if (!res.body) return Buffer.alloc(0)
+  const reader = res.body.getReader()
+  const chunks = []
+  let total = 0
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      if (!value) continue
+      total += value.byteLength
+      if (total > max) {
+        try {
+          await reader.cancel()
+        } catch {
+          // The stream is already closed; the size check still stands.
+        }
+        throw new CellsApiError(`Response body went over the ${max} byte limit; it was not read to the end`)
+      }
+      chunks.push(Buffer.from(value))
+    }
+  } finally {
+    try {
+      reader.releaseLock()
+    } catch {
+      // The reader was already released by cancel.
+    }
+  }
+  return Buffer.concat(chunks)
+}
+
 /**
  * Send one request and return the answer as text. Throws CellsApiError for a non-2xx answer.
  *
@@ -128,7 +178,7 @@ async function send(method, path, { query, body, rawBody, accept } = {}) {
  */
 export async function cellsFetch(method, path, opts = {}) {
   const { res } = await send(method, path, opts)
-  const text = await res.text()
+  const text = (await readBodyCapped(res)).toString("utf8")
   if (!res.ok) throw errorFromResponse(res.status, res.headers, text)
   return { status: res.status, headers: res.headers, text }
 }
@@ -136,7 +186,7 @@ export async function cellsFetch(method, path, opts = {}) {
 /** Send one request and return the answer as bytes (file reads, logs). */
 export async function cellsFetchBuffer(method, path, opts = {}) {
   const { res } = await send(method, path, opts)
-  const buffer = Buffer.from(await res.arrayBuffer())
+  const buffer = await readBodyCapped(res)
   if (!res.ok) throw errorFromResponse(res.status, res.headers, buffer.toString("utf8"))
   return { status: res.status, headers: res.headers, buffer }
 }
@@ -151,6 +201,36 @@ function parseBody(text) {
   }
 }
 
+/** Event types the gateway sends. A malformed frame may name one of these, and nothing else is quoted. */
+const KNOWN_EVENT_TYPES = new Set([
+  "stdout",
+  "stderr",
+  "error",
+  "exit",
+  "complete",
+  "info",
+  "started",
+  "stopping",
+  "stopped",
+  "running",
+  "progress",
+  "warning",
+  "done",
+])
+const EVENT_TYPE_PATTERN = /"type"\s*:\s*"([A-Za-z0-9_.-]{1,40})"/
+
+/**
+ * A fixed-format error for a frame that is not JSON. It never contains the frame's own bytes: the only
+ * values quoted are the byte length and, when the frame names a known event type, that protocol word.
+ */
+function malformedFrame(line) {
+  const bytes = Buffer.byteLength(line, "utf8")
+  const match = line.match(EVENT_TYPE_PATTERN)
+  const type = match && KNOWN_EVENT_TYPES.has(match[1]) ? match[1] : null
+  const where = type ? ` (type ${type}, ${bytes} bytes)` : `, ${bytes} bytes`
+  return new CellsApiError(`Malformed stream frame${where}; content not printed`)
+}
+
 /** Parse an NDJSON stream body into its events (one JSON object per non-empty line). */
 export function parseNdjson(text) {
   return text
@@ -161,7 +241,7 @@ export function parseNdjson(text) {
       try {
         return JSON.parse(line)
       } catch {
-        throw new CellsApiError(`Malformed stream line: ${line.slice(0, 120)}`)
+        throw malformedFrame(line)
       }
     })
 }
@@ -185,7 +265,12 @@ async function requestStream(method, path, opts) {
   const contentType = headers.get("content-type") || ""
   if (!contentType.includes("ndjson")) {
     const parsed = parseBody(text)
-    return Array.isArray(parsed) ? parsed : [parsed]
+    if (Array.isArray(parsed)) return parsed
+    if (parsed !== null && typeof parsed === "object") return [parsed]
+    // A text or HTML body would print nothing and exit 0, silently hiding a gateway problem.
+    throw new CellsApiError(
+      `Expected an event stream: the gateway answered ${contentType || "with no content type"} and a body that is not a JSON event`
+    )
   }
   const events = parseNdjson(text)
   const failure = streamFailure(events)

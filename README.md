@@ -74,6 +74,7 @@ All configuration options:
 |-----|---------|---------|
 | `apiKey` | `CELLS_API_KEY` | (required) |
 | `apiUrl` | `CELLS_API_URL` | `https://cells-api.mudbase.dev` |
+| `maxBodyBytes` | `CELLS_MAX_BODY_BYTES` | `67108864` (64 MiB) |
 
 ## Commands
 
@@ -194,5 +195,7 @@ Prints the cell's preview URL and waits for it to answer HTTP 200. The per-port 
 
 - Exec output is a text reading of the gateway's best-effort stream, so a command that writes binary bytes to its output can lose a byte that equals a stream marker. Use `cells files read` for files.
 - Exec answers are capped at 1 MiB by the gateway. Past the cap the output is cut and the exit status is unknown, so `cells exec` exits 1 even when the command succeeded.
+- A response body larger than `CELLS_MAX_BODY_BYTES` (64 MiB by default) is refused with a clear error instead of being buffered.
+- Progress and log output is sanitized: ANSI and OSC escape sequences are stripped from event data and type before they reach the terminal.
 - The gateway has no checkpoint delete route, so the CLI has no checkpoint delete command.
 - Previews are served only when the gateway deployment enables the preview service; `cells expose` reports that state rather than hiding it.
