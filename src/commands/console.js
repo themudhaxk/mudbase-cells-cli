@@ -25,7 +25,7 @@ export function registerConsole(program) {
   program
     .command("console <name>")
     .description("Open an interactive terminal inside a cell")
-    .option("--shell <shell>", "Shell to run in the cell (default: bash)", "bash")
+    .option("--shell <shell>", "Shell to run in the cell", "bash")
     .option("--json-events", "Print the socket's control frames (session_info, exit, debug)")
     .action(async (name, opts) => {
       const apiKey = requireApiKey()

@@ -153,7 +153,7 @@ cells checkpoint list my-cell
 cells checkpoint restore my-cell <checkpointId>
 ```
 
-Create and restore stream progress, printed as one JSON line per event. A line with `"type": "error"` makes the command exit with status 1.
+Create and restore stream progress, printed as one `<type>: <message>` line per event (progress text is in Cells vocabulary, never raw JSON). A failed event stops the command with exit status 1 and an Error line.
 
 ### Services
 
@@ -193,5 +193,6 @@ Prints the cell's preview URL and waits for it to answer HTTP 200. The per-port 
 ## Known limitations
 
 - Exec output is a text reading of the gateway's best-effort stream, so a command that writes binary bytes to its output can lose a byte that equals a stream marker. Use `cells files read` for files.
+- Exec answers are capped at 1 MiB by the gateway. Past the cap the output is cut and the exit status is unknown, so `cells exec` exits 1 even when the command succeeded.
 - The gateway has no checkpoint delete route, so the CLI has no checkpoint delete command.
 - Previews are served only when the gateway deployment enables the preview service; `cells expose` reports that state rather than hiding it.

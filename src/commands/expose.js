@@ -58,7 +58,7 @@ export function registerExpose(program) {
     .description("Print a cell's preview URL and wait for it to answer HTTP 200")
     .option(
       "--readiness-timeout <seconds>",
-      `Seconds to wait for the preview URL to return HTTP 200 (default: ${DEFAULT_READINESS_TIMEOUT_S})`,
+      "Seconds to wait for the preview URL to return HTTP 200",
       String(DEFAULT_READINESS_TIMEOUT_S),
     )
     .option("--no-wait", "Print the URL immediately without polling for readiness")
