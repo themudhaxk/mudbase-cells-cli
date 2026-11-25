@@ -136,6 +136,6 @@ export function registerServices(program) {
     .option("--lines <n>", "Number of recent lines")
     .action(async (name, service, opts) => {
       requireApiKey()
-      process.stdout.write(await getServiceLogs(name, service, { lines: opts.lines }))
+      printEvents(await getServiceLogs(name, service, { lines: opts.lines }))
     })
 }

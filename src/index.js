@@ -30,6 +30,7 @@ import { registerCheckpoint } from "./commands/checkpoint.js"
 import { registerFiles } from "./commands/files.js"
 import { registerServices } from "./commands/services.js"
 import { registerExpose } from "./commands/expose.js"
+import { cellWords, stripEscapes } from "./output.js"
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const pkg = JSON.parse(readFileSync(join(__dirname, "../package.json"), "utf8"))
@@ -52,6 +53,6 @@ registerServices(program)
 registerExpose(program)
 
 program.parseAsync(process.argv).catch((err) => {
-  console.error(`Error: ${err.message}`)
+  console.error(`Error: ${cellWords(stripEscapes(err.message))}`)
   process.exit(1)
 })

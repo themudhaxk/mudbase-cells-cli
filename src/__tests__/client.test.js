@@ -92,13 +92,13 @@ function assertBearer(record) {
 }
 
 /** Run the CLI as a child process against the mock. Resolves with the exit code and output, never rejects. */
-function runCli(args) {
+function runCli(args, extraEnv = {}) {
   return new Promise((resolve) => {
     execFile(
       process.execPath,
       [CLI, ...args],
       {
-        env: { ...process.env, CELLS_API_URL: mock.url, CELLS_API_KEY: KEY, HOME: NO_HOME },
+        env: { ...process.env, CELLS_API_URL: mock.url, CELLS_API_KEY: KEY, HOME: NO_HOME, ...extraEnv },
         timeout: 20000,
       },
       (error, stdout, stderr) => {
@@ -611,6 +611,91 @@ describe("CLI commands wire to the gateway routes", () => {
     assert.doesNotMatch(result.stdout, /"type"/)
   })
 
+  test("cells services logs prints the stream's output and no backend vendor word", async () => {
+    mock.state.reply = (rec, res) => {
+      res.writeHead(200, { "content-type": "application/x-ndjson" })
+      res.end(
+        '{"type":"stdout","data":"tick\\n"}\n' +
+          '{"type":"complete","log_files":{"combined":"/.sprite/logs/services/web.log"}}\n'
+      )
+    }
+    const result = await runCli(["services", "logs", "my-cell", "web", "--lines", "10"])
+    assert.equal(result.code, 0, result.stderr)
+    assert.match(result.stdout, /^tick$/m)
+    assert.match(result.stdout, /^complete$/m)
+    assert.doesNotMatch(result.stdout, /sprite/i)
+    assert.doesNotMatch(result.stdout, /"type"/)
+    assert.equal(lastRequest().method, "GET")
+    assert.equal(lastRequest().url, "/v1/cells/my-cell/services/web/logs?lines=10")
+    assertBearer(lastRequest())
+  })
+
+  test("cells services logs fails loudly on a text/html body", async () => {
+    mock.state.reply = (rec, res) => {
+      res.writeHead(200, { "content-type": "text/html" })
+      res.end("<!doctype html><title>gateway</title>")
+    }
+    const result = await runCli(["services", "logs", "my-cell", "web"])
+    assert.equal(result.code, 1)
+    assert.match(result.stderr, /event stream/i)
+    assert.match(result.stderr, /text\/html/)
+  })
+
+  test("cells services logs fails loudly when the content type is missing", async () => {
+    mock.state.reply = (rec, res) => {
+      res.writeHead(200)
+      res.end("plain text, not an event")
+    }
+    const result = await runCli(["services", "logs", "my-cell", "web"])
+    assert.equal(result.code, 1)
+    assert.match(result.stderr, /event stream/i)
+    assert.match(result.stderr, /no content type/i)
+  })
+
+  test("cells services logs strips ANSI and OSC escapes from the stream", async () => {
+    mock.state.reply = (rec, res) => {
+      res.writeHead(200, { "content-type": "application/x-ndjson" })
+      const events = [
+        { type: "stdout", data: "clear\x1b[2J done\n" },
+        { type: "stdout", data: "\x1b]8;;https://evil.example\x07LINK\x1b]8;;\x07\n" },
+        { type: "stdout", data: "\x1b]52;c;SGVsbG8=\x07\n" },
+        { type: "stdout", data: "rewrite\rbeep\x07back\x08\n" },
+        { type: "info", data: "note\x1b[31mred\x1b[0m" },
+        { type: "info\x1b[2J", data: "typed" },
+      ]
+      res.end(events.map((event) => JSON.stringify(event)).join("\n") + "\n")
+    }
+    const result = await runCli(["services", "logs", "my-cell", "web"])
+    assert.equal(result.code, 0, result.stderr)
+    const all = result.stdout + result.stderr
+    assert.equal(all.includes("\x1b"), false, "no ESC byte may reach the terminal")
+    assert.equal(/[\x00-\x08\x0b-\x1f\x7f]/.test(all), false, "no C0 control may reach the terminal")
+    assert.match(result.stdout, /clear/)
+    assert.match(result.stdout, /LINK/)
+    assert.match(result.stdout, /rewritebeepback/)
+    assert.match(result.stdout, /info: notered/)
+    assert.match(result.stdout, /^info: typed$/m)
+  })
+
+  test("error copy maps the backend word to cell", async () => {
+    mock.state.reply = (rec, res) =>
+      sendJson(res, 500, { error: "provider_error", message: "sprite limit reached" })
+    const result = await runCli(["list"])
+    assert.equal(result.code, 1)
+    assert.match(result.stderr, /cell limit reached/)
+    assert.doesNotMatch(result.stderr, /sprite/i)
+  })
+
+  test("a response over the body cap fails with a clear error", async () => {
+    mock.state.reply = (rec, res) => {
+      res.writeHead(200, { "content-type": "application/json" })
+      res.end(JSON.stringify({ filler: "x".repeat(2000) }))
+    }
+    const result = await runCli(["usage"], { CELLS_MAX_BODY_BYTES: "64" })
+    assert.equal(result.code, 1)
+    assert.match(result.stderr, /limit/i)
+  })
+
   test("the help lists console and expose", async () => {
     const result = await runCli(["--help"])
     assert.equal(result.code, 0, result.stderr)
@@ -623,6 +708,41 @@ describe("CLI commands wire to the gateway routes", () => {
     const result = await runCli(["list"])
     assert.equal(result.code, 1)
     assert.match(result.stderr, /^Error: Invalid or missing API key/m)
+  })
+})
+
+describe("stream frame safety", () => {
+  test("a malformed frame never echoes the line or a provider path", () => {
+    const line = '{"type":"complete","log_files":{"combined":"/.sprite/logs/services/web.log"'
+    let error = null
+    try {
+      parseNdjson(line)
+    } catch (e) {
+      error = e
+    }
+    assert.ok(error, "a truncated frame must fail")
+    assert.match(error.message, /Malformed stream frame/)
+    assert.match(error.message, /\d+ bytes/)
+    assert.doesNotMatch(error.message, /sprite/i)
+    assert.doesNotMatch(error.message, /log_files/)
+    assert.doesNotMatch(error.message, /[{}"]/)
+  })
+
+  test("cutting a known frame at every byte offset never prints part of it", () => {
+    const frame = JSON.stringify({ type: "stdout", data: "SECRET_TOKEN / .sprite/logs/x" })
+    const fixed = /^Malformed stream frame(?: \(type [A-Za-z0-9_.-]+, \d+ bytes\)|, \d+ bytes); content not printed$/
+    for (let cut = 1; cut < frame.length; cut += 1) {
+      let error = null
+      try {
+        parseNdjson(frame.slice(0, cut))
+      } catch (e) {
+        error = e
+      }
+      if (!error) continue
+      assert.match(error.message, fixed)
+      assert.equal(error.message.includes("SECRET_TOKEN"), false)
+      assert.equal(error.message.includes(".sprite"), false)
+    }
   })
 })
 
