@@ -10,9 +10,13 @@ Command-line interface for Mudbase Cells: Linux environments with a persistent f
 
 ### Global install
 
+Not available from npm yet. The registry still serves 0.1.0, which targets the retired API. Once the publish workflow (`.github/workflows/publish.yml`) runs, install 0.2.0 with:
+
 ```sh
-npm install -g mudbase-cells-cli
+npm install -g mudbase-cells-cli@0.2.0
 ```
+
+Until then, use the local development install below.
 
 ### Local development install (npm link)
 
@@ -74,7 +78,8 @@ All configuration options:
 |-----|---------|---------|
 | `apiKey` | `CELLS_API_KEY` | (required) |
 | `apiUrl` | `CELLS_API_URL` | `https://cells-api.mudbase.dev` |
-| `maxBodyBytes` | `CELLS_MAX_BODY_BYTES` | `67108864` (64 MiB) |
+
+`CELLS_MAX_BODY_BYTES` is read from the environment only (default 64 MiB); it is not a config-file key.
 
 ## Commands
 
@@ -196,6 +201,6 @@ Prints the cell's preview URL and waits for it to answer HTTP 200. The per-port 
 - Exec output is a text reading of the gateway's best-effort stream, so a command that writes binary bytes to its output can lose a byte that equals a stream marker. Use `cells files read` for files.
 - Exec answers are capped at 1 MiB by the gateway. Past the cap the output is cut and the exit status is unknown, so `cells exec` exits 1 even when the command succeeded.
 - A response body larger than `CELLS_MAX_BODY_BYTES` (64 MiB by default) is refused with a clear error instead of being buffered.
-- Progress and log output is sanitized: ANSI and OSC escape sequences are stripped from event data and type before they reach the terminal.
+- Progress and log output is sanitized: ANSI and OSC escape sequences, and other C0 control bytes except newline and tab, are stripped from event data and type before they reach the terminal.
 - The gateway has no checkpoint delete route, so the CLI has no checkpoint delete command.
 - Previews are served only when the gateway deployment enables the preview service; `cells expose` reports that state rather than hiding it.

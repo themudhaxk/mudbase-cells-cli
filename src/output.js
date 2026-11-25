@@ -48,9 +48,10 @@ export function cellWords(text) {
 }
 
 /**
- * Remove ANSI CSI and OSC escape sequences, and any bare ESC byte, from text about to be written to a
- * terminal. A service log line is written by a third party, so it can carry a cursor clear (CSI), an OSC 8
- * hyperlink, or an OSC 52 clipboard payload aimed at the developer running the command.
+ * Remove ANSI CSI and OSC escape sequences, any bare ESC byte, and the remaining C0 control bytes except
+ * newline and tab, from text about to be written to a terminal. A service log line is written by a third
+ * party, so it can carry a cursor clear (CSI), an OSC 8 hyperlink, an OSC 52 clipboard payload, a bare
+ * carriage return that rewrites the line, or a BEL that beeps, aimed at the developer running the command.
  */
 export function stripEscapes(text) {
   return String(text)
@@ -59,6 +60,7 @@ export function stripEscapes(text) {
     .replace(/\x1b[@-_]/g, "")
     .replace(/\x1b/g, "")
     .replace(/\x9b[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "")
 }
 
 /**

@@ -51,4 +51,8 @@ describe("stripEscapes", () => {
   it("keeps ordinary text and newlines", () => {
     assert.equal(stripEscapes("SERVICE_LOG_LINE\n"), "SERVICE_LOG_LINE\n")
   })
+
+  it("removes bare C0 controls but keeps newline and tab", () => {
+    assert.equal(stripEscapes("a\rb\x07c\x08d\te\nf\x7f"), "abcd\te\nf")
+  })
 })

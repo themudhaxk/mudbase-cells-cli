@@ -659,6 +659,7 @@ describe("CLI commands wire to the gateway routes", () => {
         { type: "stdout", data: "clear\x1b[2J done\n" },
         { type: "stdout", data: "\x1b]8;;https://evil.example\x07LINK\x1b]8;;\x07\n" },
         { type: "stdout", data: "\x1b]52;c;SGVsbG8=\x07\n" },
+        { type: "stdout", data: "rewrite\rbeep\x07back\x08\n" },
         { type: "info", data: "note\x1b[31mred\x1b[0m" },
         { type: "info\x1b[2J", data: "typed" },
       ]
@@ -666,9 +667,12 @@ describe("CLI commands wire to the gateway routes", () => {
     }
     const result = await runCli(["services", "logs", "my-cell", "web"])
     assert.equal(result.code, 0, result.stderr)
-    assert.equal((result.stdout + result.stderr).includes("\x1b"), false, "no ESC byte may reach the terminal")
+    const all = result.stdout + result.stderr
+    assert.equal(all.includes("\x1b"), false, "no ESC byte may reach the terminal")
+    assert.equal(/[\x00-\x08\x0b-\x1f\x7f]/.test(all), false, "no C0 control may reach the terminal")
     assert.match(result.stdout, /clear/)
     assert.match(result.stdout, /LINK/)
+    assert.match(result.stdout, /rewritebeepback/)
     assert.match(result.stdout, /info: notered/)
     assert.match(result.stdout, /^info: typed$/m)
   })
