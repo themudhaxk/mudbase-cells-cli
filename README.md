@@ -149,7 +149,7 @@ cells files rm my-cell /tmp/tmp --working-dir /tmp --recursive
 
 Relative paths resolve from `--working-dir`. Content is moved as bytes in both directions, so binary files round-trip unchanged. A new cell has no `/workspace` directory; create it with `cells exec my-cell -- mkdir -p /workspace` before you use it as a working directory.
 
-`cells files rm` refuses an empty path before any request is sent. Deleting the filesystem root with `--recursive` is refused unless you add `--yes-delete-root`. A path that resolves to `/` counts too (for example `/tmp/..`, or `.` with `--working-dir /`). The confirmed form is:
+`cells files rm` refuses an empty path before any request is sent. Deleting the filesystem root with `--recursive` is refused unless you add `--yes-delete-root`. A path that resolves to `/` counts too (for example `/tmp/..`, or `.` with `--working-dir /`). A glob path (one containing `*`, `?`, `[`, `]`, `{` or `}`) with `--recursive` is refused the same way, because one pattern can match many paths at once. Without `--recursive` a glob is sent unchanged. The cell name must not be empty or only whitespace (`cells get`, `cells delete`, `cells create` and `cells files rm` refuse it before any request). The confirmed form is:
 
 ```sh
 cells files rm my-cell / --recursive --yes-delete-root
