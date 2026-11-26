@@ -16,6 +16,7 @@ import { getConfig } from "./config.js"
 import {
   CELLS_PATH,
   USAGE_PATH,
+  assertCellName,
   buildQuery,
   cellPath,
   checkpointCreatePath,
@@ -289,6 +290,7 @@ async function requestStream(method, path, opts) {
 
 /** POST /v1/cells. @param {{name: string, url_settings?: object}} body */
 export function createCell(body) {
+  assertCellName(body.name)
   return requestJson("POST", CELLS_PATH, { body })
 }
 
@@ -409,8 +411,10 @@ export function writeFile(name, { path, workingDir, mode, mkdir }, content) {
 }
 
 /**
- * DELETE /v1/cells/{name}/fs/delete. The gateway's DeleteRequest requires `recursive` and `asRoot` as booleans,
- * so both are always sent; the CLI never deletes as root.
+ * DELETE /v1/cells/{name}/fs/delete. The body is the DeleteRequest schema in the Cells OpenAPI spec:
+ * openapi/cells-openapi.yaml in mudbase-cells-docs (commit 5a84774), components/schemas/DeleteRequest at line 1858,
+ * referenced by the delete operation at line 1122. The schema requires path, workingDir, recursive and asRoot, so
+ * both booleans are always sent; the CLI never deletes as root.
  */
 export function deleteFile(name, { path, workingDir, recursive }) {
   return requestJson("DELETE", fsPath(name, "delete"), {

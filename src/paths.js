@@ -6,6 +6,8 @@
  * (see its public operation table). Path parameters are always encoded.
  */
 
+import { posix } from "path"
+
 const seg = (value) => encodeURIComponent(String(value))
 
 /** /v1/cells */
@@ -13,9 +15,20 @@ export const CELLS_PATH = "/v1/cells"
 /** /v1/usage */
 export const USAGE_PATH = "/v1/usage"
 
+/**
+ * Refuse a cell name the gateway cannot address. "." and ".." are path segments: the URL parser resolves them,
+ * so /v1/cells/.. would reach another route. Throws before any request is sent.
+ */
+export function assertCellName(name) {
+  if (name === "." || name === "..") {
+    throw new Error(`Invalid cell name "${name}": "." and ".." are path segments, not cell names`)
+  }
+  return name
+}
+
 /** /v1/cells/{name} */
 export function cellPath(name) {
-  return `${CELLS_PATH}/${seg(name)}`
+  return `${CELLS_PATH}/${seg(assertCellName(name))}`
 }
 
 /** /v1/cells/{name}/exec */
@@ -61,6 +74,19 @@ export function servicePath(name, service) {
 /** /v1/cells/{name}/services/{service}/{action}, for example start, stop, restart, logs. */
 export function serviceActionPath(name, service, action) {
   return `${servicePath(name, service)}/${seg(action)}`
+}
+
+/**
+ * True when a file path resolves to the filesystem root. An absolute path is normalised on its own ("/.",
+ * "/tmp/..", "//" all resolve to "/"). A relative path is joined onto an absolute --working-dir first. A relative
+ * path with no absolute working directory cannot be resolved here, so it is not treated as the root.
+ */
+export function resolvesToRoot(path, workingDir) {
+  let target
+  if (path.startsWith("/")) target = path
+  else if (workingDir && workingDir.startsWith("/")) target = posix.join(workingDir, path)
+  else return false
+  return posix.normalize(target) === "/"
 }
 
 /**
