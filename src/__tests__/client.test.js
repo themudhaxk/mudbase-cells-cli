@@ -765,6 +765,119 @@ describe("stream frame safety", () => {
   })
 })
 
+describe("cell names and delete guards: refused before any request", () => {
+  for (const bad of [".", ".."]) {
+    test(`the client refuses the cell name "${bad}" for every route that takes a name`, async () => {
+      mock.state.reply = (rec, res) => sendJson(res, 200, {})
+      await assert.rejects(async () => getCell(bad), /Invalid cell name/)
+      await assert.rejects(async () => createCell({ name: bad }), /Invalid cell name/)
+      await assert.rejects(async () => deleteCell(bad), /Invalid cell name/)
+      await assert.rejects(async () => execCell(bad, { cmd: ["true"] }), /Invalid cell name/)
+      await assert.rejects(async () => readFile(bad, { path: "a.txt" }), /Invalid cell name/)
+      assert.equal(mock.seen.length, 0, "no request may leave for a refused cell name")
+    })
+
+    test(`the CLI exits non-zero for the cell name "${bad}" and sends nothing`, async () => {
+      mock.state.reply = (rec, res) => sendJson(res, 200, {})
+      const result = await runCli(["get", bad])
+      assert.notEqual(result.code, 0)
+      assert.match(result.stderr, /Invalid cell name/)
+      assert.equal(mock.seen.length, 0)
+    })
+  }
+
+  test("the CLI refuses the cell name \"..\" on create as well", async () => {
+    mock.state.reply = (rec, res) => sendJson(res, 201, {})
+    const result = await runCli(["create", ".."])
+    assert.notEqual(result.code, 0)
+    assert.match(result.stderr, /Invalid cell name/)
+    assert.equal(mock.seen.length, 0)
+  })
+
+  test("names that only start with dots are still valid cell names", async () => {
+    mock.state.reply = (rec, res) => sendJson(res, 200, { name: "..x", id: "cell-1", status: "warm" })
+    await getCell("..x")
+    assert.equal(lastRequest().method, "GET")
+    assert.equal(lastRequest().url, "/v1/cells/..x")
+    assertBearer(lastRequest())
+  })
+
+  test("files rm refuses an empty path before any request", async () => {
+    mock.state.reply = (rec, res) => sendJson(res, 200, { success: true })
+    const result = await runCli(["files", "rm", "my-cell", ""])
+    assert.notEqual(result.code, 0)
+    assert.match(result.stderr, /path is required/)
+    assert.equal(mock.seen.length, 0)
+  })
+
+  test("files rm of a whitespace-only path is refused the same way", async () => {
+    mock.state.reply = (rec, res) => sendJson(res, 200, { success: true })
+    const result = await runCli(["files", "rm", "my-cell", "   ", "--recursive"])
+    assert.notEqual(result.code, 0)
+    assert.match(result.stderr, /path is required/)
+    assert.equal(mock.seen.length, 0)
+  })
+
+  for (const rootPath of ["/", "//"]) {
+    test(`files rm "${rootPath}" --recursive is refused without --yes-delete-root`, async () => {
+      mock.state.reply = (rec, res) => sendJson(res, 200, { success: true })
+      const result = await runCli(["files", "rm", "my-cell", rootPath, "--recursive"])
+      assert.notEqual(result.code, 0)
+      assert.match(result.stderr, /--yes-delete-root/)
+      assert.equal(mock.seen.length, 0, "the root delete must not reach the gateway without the flag")
+    })
+  }
+
+  // Every spelling that resolves to the filesystem root is the same delete as "/", so each needs the confirm flag.
+  for (const args of [
+    ["/.", "--recursive"],
+    ["/tmp/..", "--recursive"],
+    ["//./", "--recursive"],
+    [".", "--recursive", "--working-dir", "/"],
+    ["tmp/../", "--recursive", "--working-dir", "/"],
+  ]) {
+    test(`files rm ${args.join(" ")} resolving to the root is refused without --yes-delete-root`, async () => {
+      mock.state.reply = (rec, res) => sendJson(res, 200, { success: true })
+      const result = await runCli(["files", "rm", "my-cell", ...args])
+      assert.notEqual(result.code, 0)
+      assert.match(result.stderr, /--yes-delete-root/)
+      assert.equal(mock.seen.length, 0, "a root-resolving path must not reach the gateway without the flag")
+    })
+  }
+
+  test("a relative path under a non-root working directory needs no confirm flag", async () => {
+    mock.state.reply = (rec, res) => sendJson(res, 200, { success: true })
+    const result = await runCli(["files", "rm", "my-cell", "tmp", "--recursive", "--working-dir", "/tmp"])
+    assert.equal(result.code, 0, result.stderr)
+    assert.deepEqual(JSON.parse(lastRequest().body), { path: "tmp", workingDir: "/tmp", recursive: true, asRoot: false })
+  })
+
+  test("files rm / --recursive --yes-delete-root sends the delete", async () => {
+    mock.state.reply = (rec, res) => sendJson(res, 200, { success: true })
+    const result = await runCli(["files", "rm", "my-cell", "/", "--recursive", "--yes-delete-root"])
+    assert.equal(result.code, 0, result.stderr)
+    assert.equal(lastRequest().method, "DELETE")
+    assert.equal(lastRequest().url, "/v1/cells/my-cell/fs/delete")
+    assert.deepEqual(JSON.parse(lastRequest().body), { path: "/", recursive: true, asRoot: false })
+    assertBearer(lastRequest())
+  })
+
+  test("files rm of an ordinary directory needs no confirm flag", async () => {
+    mock.state.reply = (rec, res) => sendJson(res, 200, { success: true })
+    const result = await runCli(["files", "rm", "my-cell", "/tmp/tmp", "--recursive"])
+    assert.equal(result.code, 0, result.stderr)
+    assert.equal(lastRequest().url, "/v1/cells/my-cell/fs/delete")
+    assert.deepEqual(JSON.parse(lastRequest().body), { path: "/tmp/tmp", recursive: true, asRoot: false })
+  })
+
+  test("the delete body comment cites the Cells OpenAPI schema, not an unverified gateway type", () => {
+    const src = readFileSync(fileURLToPath(new URL("../client.js", import.meta.url)), "utf8")
+    assert.match(src, /openapi\/cells-openapi\.yaml/)
+    assert.match(src, /components\/schemas\/DeleteRequest/)
+    assert.doesNotMatch(src, /gateway's DeleteRequest/)
+  })
+})
+
 describe("release: version agreement, default URL and the retired project-scoped API", () => {
   const ROOT = fileURLToPath(new URL("../..", import.meta.url))
   const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"))

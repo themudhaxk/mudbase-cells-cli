@@ -16,6 +16,7 @@
 import { readFileSync, writeFileSync } from "fs"
 import { requireApiKey } from "../config.js"
 import { deleteFile, listDirectory, readFile, writeFile } from "../client.js"
+import { resolvesToRoot } from "../paths.js"
 import { printJson, printTable, readStdin } from "../output.js"
 
 export function registerFiles(program) {
@@ -80,10 +81,17 @@ export function registerFiles(program) {
 
   files
     .command("rm <name> <path>")
-    .description("Delete a file or directory")
+    .description("Delete a file or directory. An empty path is refused; deleting \"/\" with --recursive needs --yes-delete-root")
     .option("--working-dir <dir>", "Directory that relative paths resolve from")
     .option("--recursive", "Delete a directory and its contents")
+    .option("--yes-delete-root", "Confirm a --recursive delete of the filesystem root \"/\" (refused without it)")
     .action(async (name, path, opts) => {
+      if (path.trim() === "") {
+        throw new Error("File path is required: an empty path is refused before any request")
+      }
+      if (opts.recursive && resolvesToRoot(path, opts.workingDir) && !opts.yesDeleteRoot) {
+        throw new Error('Refusing to delete the filesystem root "/" with --recursive; add --yes-delete-root to confirm')
+      }
       requireApiKey()
       const result = await deleteFile(name, { path, workingDir: opts.workingDir, recursive: opts.recursive })
       console.log(JSON.stringify(result))
