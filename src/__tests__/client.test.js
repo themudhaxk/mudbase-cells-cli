@@ -339,7 +339,26 @@ describe("exec, checkpoints, files, services", () => {
     await deleteFile("my-cell", { path: "tmp", workingDir: "/home/cell", recursive: true })
     assert.equal(lastRequest().method, "DELETE")
     assert.equal(lastRequest().url, "/v1/cells/my-cell/fs/delete")
-    assert.deepEqual(JSON.parse(lastRequest().body), { path: "tmp", workingDir: "/home/cell", recursive: true })
+    assert.deepEqual(JSON.parse(lastRequest().body), {
+      path: "tmp",
+      workingDir: "/home/cell",
+      recursive: true,
+      asRoot: false,
+    })
+    assertBearer(lastRequest())
+  })
+
+  test("deleteFile sends recursive false and asRoot false when not recursive (both required by DeleteRequest)", async () => {
+    mock.state.reply = (rec, res) => sendJson(res, 200, { success: true })
+    await deleteFile("my-cell", { path: "notes.txt", workingDir: "/home/cell" })
+    assert.equal(lastRequest().method, "DELETE")
+    assert.equal(lastRequest().url, "/v1/cells/my-cell/fs/delete")
+    assert.deepEqual(JSON.parse(lastRequest().body), {
+      path: "notes.txt",
+      workingDir: "/home/cell",
+      recursive: false,
+      asRoot: false,
+    })
     assertBearer(lastRequest())
   })
 

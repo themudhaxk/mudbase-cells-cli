@@ -408,10 +408,13 @@ export function writeFile(name, { path, workingDir, mode, mkdir }, content) {
   })
 }
 
-/** DELETE /v1/cells/{name}/fs/delete. */
+/**
+ * DELETE /v1/cells/{name}/fs/delete. The gateway's DeleteRequest requires `recursive` and `asRoot` as booleans,
+ * so both are always sent; the CLI never deletes as root.
+ */
 export function deleteFile(name, { path, workingDir, recursive }) {
   return requestJson("DELETE", fsPath(name, "delete"), {
-    body: { path, workingDir, ...(recursive ? { recursive: true } : {}) },
+    body: { path, workingDir, recursive: recursive === true, asRoot: false },
   })
 }
 
