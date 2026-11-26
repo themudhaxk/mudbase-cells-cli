@@ -870,6 +870,72 @@ describe("cell names and delete guards: refused before any request", () => {
     assert.deepEqual(JSON.parse(lastRequest().body), { path: "/tmp/tmp", recursive: true, asRoot: false })
   })
 
+  for (const blank of ["", "   ", "\t"]) {
+    const shown = JSON.stringify(blank)
+
+    test(`the client refuses the blank cell name ${shown} for every route that takes a name`, async () => {
+      mock.state.reply = (rec, res) => sendJson(res, 200, {})
+      await assert.rejects(async () => getCell(blank), /Invalid cell name/)
+      await assert.rejects(async () => createCell({ name: blank }), /Invalid cell name/)
+      await assert.rejects(async () => deleteCell(blank), /Invalid cell name/)
+      await assert.rejects(async () => execCell(blank, { cmd: ["true"] }), /Invalid cell name/)
+      await assert.rejects(async () => readFile(blank, { path: "a.txt" }), /Invalid cell name/)
+      await assert.rejects(async () => deleteFile(blank, { path: "a.txt" }), /Invalid cell name/)
+      assert.equal(mock.seen.length, 0, "no request may leave for a blank cell name")
+    })
+
+    test(`the CLI exits non-zero for the blank cell name ${shown} on create, get, delete and fs delete, and sends nothing`, async () => {
+      mock.state.reply = (rec, res) => sendJson(res, 200, {})
+      for (const args of [["create", blank], ["get", blank], ["delete", blank], ["files", "rm", blank, "/tmp/x"]]) {
+        const result = await runCli(args)
+        assert.notEqual(result.code, 0, args.join(" "))
+        assert.match(result.stderr, /Invalid cell name/, args.join(" "))
+        assert.doesNotMatch(result.stdout, /Deleted cell/, args.join(" "))
+      }
+      assert.equal(mock.seen.length, 0, "no request may leave for a blank cell name")
+    })
+  }
+
+  // A glob can expand to the root or to anything under it, so it needs the same explicit confirm as "/".
+  for (const globPath of ["*", "/*", "/tmp/*", "tmp/?", "[ab]", "{a,b}", "/tmp/x*"]) {
+    test(`files rm "${globPath}" --recursive is refused without --yes-delete-root`, async () => {
+      mock.state.reply = (rec, res) => sendJson(res, 200, { success: true })
+      const result = await runCli(["files", "rm", "my-cell", globPath, "--recursive"])
+      assert.notEqual(result.code, 0)
+      assert.match(result.stderr, /--yes-delete-root/)
+      assert.equal(mock.seen.length, 0, "a glob delete must not reach the gateway without the flag")
+    })
+  }
+
+  test("a relative glob under a working directory with --recursive is refused without --yes-delete-root", async () => {
+    mock.state.reply = (rec, res) => sendJson(res, 200, { success: true })
+    const result = await runCli(["files", "rm", "my-cell", "*", "--recursive", "--working-dir", "/tmp"])
+    assert.notEqual(result.code, 0)
+    assert.match(result.stderr, /--yes-delete-root/)
+    assert.equal(mock.seen.length, 0)
+  })
+
+  test("files rm of a glob with --recursive and --yes-delete-root sends the delete", async () => {
+    mock.state.reply = (rec, res) => sendJson(res, 200, { success: true })
+    const result = await runCli(["files", "rm", "my-cell", "/tmp/*", "--recursive", "--yes-delete-root"])
+    assert.equal(result.code, 0, result.stderr)
+    assert.equal(lastRequest().url, "/v1/cells/my-cell/fs/delete")
+    assert.deepEqual(JSON.parse(lastRequest().body), { path: "/tmp/*", recursive: true, asRoot: false })
+  })
+
+  test("a glob path without --recursive is unchanged and needs no confirm flag", async () => {
+    mock.state.reply = (rec, res) => sendJson(res, 200, { success: true })
+    const result = await runCli(["files", "rm", "my-cell", "*.log"])
+    assert.equal(result.code, 0, result.stderr)
+    assert.deepEqual(JSON.parse(lastRequest().body), { path: "*.log", recursive: false, asRoot: false })
+  })
+
+  test("the repo .gitignore lists exactly node_modules, dist, .env and *.log", () => {
+    const ROOT = fileURLToPath(new URL("../..", import.meta.url))
+    const lines = readFileSync(join(ROOT, ".gitignore"), "utf8").split("\n").filter((line) => line !== "")
+    assert.deepEqual(lines, ["node_modules", "dist", ".env", "*.log"])
+  })
+
   test("the delete body comment cites the Cells OpenAPI schema, not an unverified gateway type", () => {
     const src = readFileSync(fileURLToPath(new URL("../client.js", import.meta.url)), "utf8")
     assert.match(src, /openapi\/cells-openapi\.yaml/)

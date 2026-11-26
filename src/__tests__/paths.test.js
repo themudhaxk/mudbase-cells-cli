@@ -13,6 +13,7 @@ import assert from "node:assert/strict"
 import {
   CELLS_PATH,
   USAGE_PATH,
+  assertCellName,
   buildQuery,
   cellPath,
   checkpointCreatePath,
@@ -21,6 +22,7 @@ import {
   checkpointsPath,
   execPath,
   fsPath,
+  hasGlob,
   parseExitCode,
   serviceActionPath,
   servicePath,
@@ -110,5 +112,21 @@ describe("parseExitCode", () => {
     assert.equal(parseExitCode("unknown"), null)
     assert.equal(parseExitCode("3.5"), null)
     assert.equal(parseExitCode(""), null)
+  })
+})
+
+describe("cell names and glob paths", () => {
+  it("refuses an empty or whitespace-only cell name and keeps the name it accepts unchanged", () => {
+    for (const blank of ["", " ", "\t\n"]) {
+      assert.throws(() => assertCellName(blank), /Invalid cell name/)
+      assert.throws(() => cellPath(blank), /Invalid cell name/)
+    }
+    assert.equal(assertCellName("demo"), "demo")
+    assert.equal(assertCellName(" demo"), " demo")
+  })
+
+  it("flags every glob character, and only those", () => {
+    for (const glob of ["*", "/*", "/tmp/*", "a?b", "[ab]", "{a,b}", "x]"]) assert.equal(hasGlob(glob), true, glob)
+    for (const plain of ["/", "/tmp/tmp", "notes.txt", "a-b_c.d", ".."]) assert.equal(hasGlob(plain), false, plain)
   })
 })

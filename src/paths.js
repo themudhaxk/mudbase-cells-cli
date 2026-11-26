@@ -16,10 +16,14 @@ export const CELLS_PATH = "/v1/cells"
 export const USAGE_PATH = "/v1/usage"
 
 /**
- * Refuse a cell name the gateway cannot address. "." and ".." are path segments: the URL parser resolves them,
- * so /v1/cells/.. would reach another route. Throws before any request is sent.
+ * Refuse a cell name the gateway cannot address. An empty or whitespace-only name would turn /v1/cells/{name}
+ * into the bare collection (DELETE /v1/cells/ would then report a cell as deleted). "." and ".." are path
+ * segments: the URL parser resolves them, so /v1/cells/.. would reach another route. Throws before any request.
  */
 export function assertCellName(name) {
+  if (typeof name !== "string" || name.trim() === "") {
+    throw new Error(`Invalid cell name ${JSON.stringify(name)}: a cell name is required and cannot be empty or only whitespace`)
+  }
   if (name === "." || name === "..") {
     throw new Error(`Invalid cell name "${name}": "." and ".." are path segments, not cell names`)
   }
@@ -87,6 +91,14 @@ export function resolvesToRoot(path, workingDir) {
   else if (workingDir && workingDir.startsWith("/")) target = posix.join(workingDir, path)
   else return false
   return posix.normalize(target) === "/"
+}
+
+/**
+ * True when a path holds a glob character (* ? [ ] { }), so one spelling can match many paths at once. A glob
+ * with --recursive can reach the root, so the delete guard treats it like "/".
+ */
+export function hasGlob(path) {
+  return /[*?[\]{}]/.test(path)
 }
 
 /**
