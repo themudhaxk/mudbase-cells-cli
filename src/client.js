@@ -25,6 +25,7 @@ import {
   checkpointsPath,
   execPath,
   fsPath,
+  resolveWorkingDir,
   parseExitCode,
   serviceActionPath,
   servicePath,
@@ -392,20 +393,22 @@ export function restoreCheckpoint(name, checkpointId) {
 /** GET /v1/cells/{name}/fs/read. Returns the file content as bytes. */
 export async function readFile(name, { path, workingDir }) {
   const { buffer } = await cellsFetchBuffer("GET", fsPath(name, "read"), {
-    query: { path, workingDir },
+    query: { path, workingDir: resolveWorkingDir(path, workingDir) },
   })
   return buffer
 }
 
 /** GET /v1/cells/{name}/fs/list. */
 export function listDirectory(name, { path, workingDir }) {
-  return requestJson("GET", fsPath(name, "list"), { query: { path, workingDir } })
+  return requestJson("GET", fsPath(name, "list"), {
+    query: { path, workingDir: resolveWorkingDir(path, workingDir) },
+  })
 }
 
 /** PUT /v1/cells/{name}/fs/write with the content as the raw body. */
 export function writeFile(name, { path, workingDir, mode, mkdir }, content) {
   return requestJson("PUT", fsPath(name, "write"), {
-    query: { path, workingDir, mode, mkdir: mkdir ? "true" : undefined },
+    query: { path, workingDir: resolveWorkingDir(path, workingDir), mode, mkdir: mkdir ? "true" : undefined },
     rawBody: content,
   })
 }
@@ -418,7 +421,7 @@ export function writeFile(name, { path, workingDir, mode, mkdir }, content) {
  */
 export function deleteFile(name, { path, workingDir, recursive }) {
   return requestJson("DELETE", fsPath(name, "delete"), {
-    body: { path, workingDir, recursive: recursive === true, asRoot: false },
+    body: { path, workingDir: resolveWorkingDir(path, workingDir), recursive: recursive === true, asRoot: false },
   })
 }
 

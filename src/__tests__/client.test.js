@@ -29,6 +29,7 @@ import {
   listCheckpoints,
   restoreCheckpoint,
   readFile,
+  listDirectory,
   writeFile,
   deleteFile,
   defineService,
@@ -858,7 +859,7 @@ describe("cell names and delete guards: refused before any request", () => {
     assert.equal(result.code, 0, result.stderr)
     assert.equal(lastRequest().method, "DELETE")
     assert.equal(lastRequest().url, "/v1/cells/my-cell/fs/delete")
-    assert.deepEqual(JSON.parse(lastRequest().body), { path: "/", recursive: true, asRoot: false })
+    assert.deepEqual(JSON.parse(lastRequest().body), { path: "/", workingDir: "/", recursive: true, asRoot: false })
     assertBearer(lastRequest())
   })
 
@@ -867,7 +868,7 @@ describe("cell names and delete guards: refused before any request", () => {
     const result = await runCli(["files", "rm", "my-cell", "/tmp/tmp", "--recursive"])
     assert.equal(result.code, 0, result.stderr)
     assert.equal(lastRequest().url, "/v1/cells/my-cell/fs/delete")
-    assert.deepEqual(JSON.parse(lastRequest().body), { path: "/tmp/tmp", recursive: true, asRoot: false })
+    assert.deepEqual(JSON.parse(lastRequest().body), { path: "/tmp/tmp", workingDir: "/", recursive: true, asRoot: false })
   })
 
   for (const blank of ["", "   ", "\t"]) {
@@ -920,14 +921,14 @@ describe("cell names and delete guards: refused before any request", () => {
     const result = await runCli(["files", "rm", "my-cell", "/tmp/*", "--recursive", "--yes-delete-root"])
     assert.equal(result.code, 0, result.stderr)
     assert.equal(lastRequest().url, "/v1/cells/my-cell/fs/delete")
-    assert.deepEqual(JSON.parse(lastRequest().body), { path: "/tmp/*", recursive: true, asRoot: false })
+    assert.deepEqual(JSON.parse(lastRequest().body), { path: "/tmp/*", workingDir: "/", recursive: true, asRoot: false })
   })
 
-  test("a glob path without --recursive is unchanged and needs no confirm flag", async () => {
+  test("a glob path without --recursive needs no confirm flag once --working-dir is given", async () => {
     mock.state.reply = (rec, res) => sendJson(res, 200, { success: true })
-    const result = await runCli(["files", "rm", "my-cell", "*.log"])
+    const result = await runCli(["files", "rm", "my-cell", "*.log", "--working-dir", "/tmp"])
     assert.equal(result.code, 0, result.stderr)
-    assert.deepEqual(JSON.parse(lastRequest().body), { path: "*.log", recursive: false, asRoot: false })
+    assert.deepEqual(JSON.parse(lastRequest().body), { path: "*.log", workingDir: "/tmp", recursive: false, asRoot: false })
   })
 
   test("the repo .gitignore lists exactly node_modules, dist, .env and *.log", () => {
@@ -982,5 +983,51 @@ describe("release: version agreement, default URL and the retired project-scoped
     for (const file of files) {
       assert.equal(readFileSync(file, "utf8").includes(retired), false, `${file} uses the retired path`)
     }
+  })
+})
+
+describe("files commands always send workingDir (F1)", () => {
+  test("readFile sends workingDir=/ when the path is absolute and none is given", async () => {
+    mock.state.reply = (rec, res) => {
+      res.writeHead(200, { "content-type": "application/octet-stream" })
+      res.end("x")
+    }
+    await readFile("my-cell", { path: "/etc/hosts" })
+    assert.equal(lastRequest().url, "/v1/cells/my-cell/fs/read?path=%2Fetc%2Fhosts&workingDir=%2F")
+  })
+
+  test("listDirectory sends workingDir=/ when the path is absolute and none is given", async () => {
+    mock.state.reply = (rec, res) => sendJson(res, 200, { entries: [] })
+    await listDirectory("my-cell", { path: "/tmp" })
+    assert.equal(lastRequest().url, "/v1/cells/my-cell/fs/list?path=%2Ftmp&workingDir=%2F")
+  })
+
+  test("writeFile sends workingDir=/ when the path is absolute and none is given", async () => {
+    mock.state.reply = (rec, res) => sendJson(res, 200, { success: true })
+    await writeFile("my-cell", { path: "/tmp/a.txt" }, "hi")
+    assert.match(lastRequest().url, /[?&]workingDir=%2F(&|$)/)
+  })
+
+  test("deleteFile puts workingDir=/ in the JSON body when the path is absolute and none is given", async () => {
+    mock.state.reply = (rec, res) => sendJson(res, 200, { success: true })
+    await deleteFile("my-cell", { path: "/tmp/old" })
+    assert.equal(JSON.parse(lastRequest().body).workingDir, "/")
+  })
+
+  test("files read with a relative path and no --working-dir exits non-zero and sends no request", async () => {
+    mock.state.reply = (rec, res) => {
+      res.writeHead(200, { "content-type": "application/octet-stream" })
+      res.end("x")
+    }
+    const result = await runCli(["files", "read", "my-cell", "notes.txt"])
+    assert.notEqual(result.code, 0)
+    assert.equal(mock.seen.length, 0)
+  })
+
+  test("files rm with a relative path and no --working-dir exits non-zero and sends no request", async () => {
+    mock.state.reply = (rec, res) => sendJson(res, 200, { success: true })
+    const result = await runCli(["files", "rm", "my-cell", "notes.txt"])
+    assert.notEqual(result.code, 0)
+    assert.equal(mock.seen.length, 0)
   })
 })
