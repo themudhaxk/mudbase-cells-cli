@@ -65,6 +65,17 @@ export function fsPath(name, operation) {
   return `${cellPath(name)}/fs/${seg(operation)}`
 }
 
+/**
+ * The workingDir every filesystem call sends. The Cells OpenAPI spec marks workingDir required on fs read, list,
+ * write and on the DeleteRequest body. An absolute path needs no base directory, so it is sent as "/". A relative
+ * path with no --working-dir is refused before any request, because a default for it would resolve against the root.
+ */
+export function resolveWorkingDir(path, workingDir) {
+  if (typeof workingDir === "string" && workingDir !== "") return workingDir
+  if (typeof path === "string" && path.startsWith("/")) return "/"
+  throw new Error("A relative path needs --working-dir: pass the directory that the path is relative to")
+}
+
 /** /v1/cells/{name}/services */
 export function servicesPath(name) {
   return `${cellPath(name)}/services`
